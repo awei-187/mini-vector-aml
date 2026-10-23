@@ -13,7 +13,7 @@ spec.loader.exec_module(verifier)
 
 
 class EnhancedVerifierTests(unittest.TestCase):
-    def fixture(self, *, fallback=False, memory_queries=True):
+    def fixture(self, *, fallback=False, memory_queries=True, mode="llm"):
         def llm(messages):
             data = json.loads(messages[-1]["content"])
             if "Generate retrieval questions" in messages[0]["content"]:
@@ -22,7 +22,7 @@ class EnhancedVerifierTests(unittest.TestCase):
             return json.dumps({"ids": [] if fallback else [row["id"] for row in reversed(data["candidates"])]})
 
         memory = MiniVector(db_path=":memory:", llm=llm, embedder=lambda texts: [[1., 0.] for _ in texts],
-                            memory_query_enabled=memory_queries, rerank_limit=2)
+                            memory_query_enabled=memory_queries, rerank_limit=2, rerank_mode=mode)
         self.addCleanup(memory.close)
         for word in ("alpha", "beta", "gamma", "delta"):
             memory.add("evidence " + word, user_id="test", infer=False)
@@ -60,6 +60,18 @@ class EnhancedVerifierTests(unittest.TestCase):
                 states = verifier.verify_enhanced_ranking(trace, found, vector, questions, exported)
                 self.assertEqual(states["semantic"], "fallback")
                 self.assertEqual(states["memory_query"], "fallback" if enabled else "skipped")
+
+    def test_global_selection_and_fallback_verify_and_forged_selection_fails(self):
+        for mode in ("global", "evidence"):
+            for fallback in (False, True):
+                with self.subTest(mode=mode, fallback=fallback):
+                    fixture = self.fixture(mode=mode, fallback=fallback)
+                    self.assertEqual(verifier.verify_enhanced_ranking(*fixture)["global"],
+                                     "fallback" if fallback else "succeeded")
+                    broken = copy.deepcopy(fixture)
+                    broken[0]["global_rerank"]["selected_ids"] = ["unknown"]
+                    with self.assertRaises(AssertionError):
+                        verifier.verify_enhanced_ranking(*broken)
 
 
 if __name__ == "__main__":

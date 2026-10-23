@@ -12,7 +12,7 @@ from typing import Any, Callable, Iterable
 
 from .config import setting
 from .prompts import MEMORY_EXTRACTION_PROMPT, build_extraction_input
-from .retrieval import memory_queries, rerank_channel
+from .retrieval import memory_queries, rerank_channel, rerank_fused
 
 
 def _now() -> str:
@@ -286,8 +286,8 @@ class MiniVector:
             raise ValueError("memory_query_enabled must be boolean")
         if type(queries_per_memory) is not int or queries_per_memory < 1:
             raise ValueError("queries_per_memory must be a positive integer")
-        if rerank_mode not in {"none", "llm"}:
-            raise ValueError("rerank_mode must be 'none' or 'llm'")
+        if rerank_mode not in {"none", "llm", "global", "evidence"}:
+            raise ValueError("rerank_mode must be none, llm, global or evidence")
         if type(rerank_limit) is not int or rerank_limit < 1:
             raise ValueError("rerank_limit must be a positive integer")
         self.memory_query_enabled = memory_query_enabled
@@ -530,6 +530,14 @@ class MiniVector:
         # Equal-weight RRF of channel ranks, normalized to [0, 1]. The LLM only
         # changes the head of each channel; distinct candidates survive fusion.
         ordered = sorted(merged.values(), key=lambda entry: (-entry["rrf"], entry["item"]["id"]))
+        combined_order = [entry["item"]["id"] for entry in ordered]
+        global_trace = None
+        if self.rerank_mode in {"global", "evidence"}:
+            selected, global_trace = rerank_fused(
+                self._complete, query, [entry["item"] for entry in ordered],
+                self.rerank_limit, top_k, diverse=self.rerank_mode == "evidence")
+            by_id = {entry["item"]["id"]: entry for entry in ordered}
+            ordered = [by_id[item["id"]] for item in selected]
         semantic_scores = {item["id"]: score for item, score in semantic}
         query_scores = {item["id"]: score for item, score in generated}
         results = []
@@ -552,19 +560,24 @@ class MiniVector:
                                              lexical_details=bm25_trace)
             research_trace.clear()
             research_trace.update({
-                "schema_version": 2, "engine": "mini-vector", "candidate_limit": candidate_limit,
+                "schema_version": 3 if global_trace is not None else 2,
+                "engine": "mini-vector", "candidate_limit": candidate_limit,
                 "top_k": top_k, "threshold": threshold,
                 "memory_query_enabled": self.memory_query_enabled,
                 "rerank_mode": self.rerank_mode, "rerank_limit": self.rerank_limit,
                 "score_semantics": {"final": "equal-weight channel RRF (k=60), normalized by active_channels/61"},
                 "channels": channel_trace,
-                "stages": {"combined_order": [entry["item"]["id"] for entry in ordered],
+                "stages": {"combined_order": combined_order,
                            "final": [{"rank": rank, "memory_id": item["id"], "score": item["score"],
                                       "score_details": item["score_details"],
                                       "metadata": _trace_metadata(item.get("metadata"))}
                                      for rank, item in enumerate(results, start=1)]},
                 "source_attribution": "memory metadata as recorded; absent source IDs remain unknown",
             })
+            if global_trace is not None:
+                research_trace["global_rerank"] = global_trace
+                research_trace["stages"]["selected_order"] = [entry["item"]["id"] for entry in ordered]
+                research_trace["score_semantics"]["final"] += "; RRF score retained after global selection (not a rank probability)"
             if not explain:
                 for item in results:
                     item.pop("score_details", None)

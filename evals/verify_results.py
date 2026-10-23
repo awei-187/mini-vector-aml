@@ -26,7 +26,7 @@ def normalized_bm25(candidates):
 def verify_enhanced_ranking(trace, retrieved, query_vector, query_rows, exported, question_norms=None):
     """Recompute schema-2 question pools, channel permutations and RRF."""
     channels = trace["channels"]
-    assert trace["schema_version"] == 2
+    assert trace["schema_version"] in {2, 3}
     assert set(channels) == {"semantic", "bm25", "memory_query"}
     lexical = channels["bm25"]
     assert lexical["status"] == "recorded"
@@ -76,7 +76,7 @@ def verify_enhanced_ranking(trace, retrieved, query_vector, query_rows, exported
         output = info["output_ids"]
         assert len(output) == len(eligible) and set(output) == set(eligible)
         assert output[len(head):] == eligible[len(head):]
-        if trace["rerank_mode"] == "none":
+        if trace["rerank_mode"] != "llm":
             assert info["status"] == "disabled" and info["api_calls"] == 0
         elif len(head) < 2:
             assert info["status"] == "skipped" and info["api_calls"] == 0
@@ -90,6 +90,26 @@ def verify_enhanced_ranking(trace, retrieved, query_vector, query_rows, exported
             ranks.setdefault(memory_id, {})[name] = rank
     ordered = sorted(merged, key=lambda mid: (-merged[mid], mid))
     assert trace["stages"]["combined_order"] == ordered
+    states = {name: channel["rerank"]["status"] for name, channel in channels.items()}
+    if trace["schema_version"] == 3:
+        assert trace["rerank_mode"] in {"global", "evidence"}
+        info = trace["global_rerank"]
+        head = ordered[:trace["rerank_limit"]]
+        assert info["input_ids"] == head
+        assert info["max_select"] == min(trace["top_k"], len(head))
+        assert info["diverse"] == (trace["rerank_mode"] == "evidence")
+        selected = info["selected_ids"]
+        if len(head) < 2:
+            assert info["status"] == "skipped" and info["api_calls"] == 0 and not selected
+        elif info["status"] == "succeeded":
+            assert info["api_calls"] == 1
+            assert 1 <= len(selected) <= info["max_select"]
+            assert len(set(selected)) == len(selected) and set(selected) <= set(head)
+        else:
+            assert info["status"] == "fallback" and info["api_calls"] == 1 and not selected
+        ordered = selected + [mid for mid in ordered if mid not in set(selected)]
+        assert info["output_ids"] == trace["stages"]["selected_order"] == ordered
+        states["global"] = info["status"]
     assert [hit["id"] for hit in retrieved] == ordered[:trace["top_k"]]
     assert [hit["memory_id"] for hit in trace["stages"]["final"]] == ordered[:trace["top_k"]]
     for item, final_item in zip(retrieved, trace["stages"]["final"]):
@@ -101,7 +121,7 @@ def verify_enhanced_ranking(trace, retrieved, query_vector, query_rows, exported
         assert details == final_item["score_details"]
         assert details["channel_ranks"] == ranks[mid]
         assert abs(details["rrf_score"] - merged[mid]) < 1e-10
-    return {name: channel["rerank"]["status"] for name, channel in channels.items()}
+    return states
 
 
 def verify(root):
@@ -185,11 +205,30 @@ def verify(root):
         exact.sort(key=lambda pair: pair[1], reverse=True)
         assert [mid for mid, _ in exact[:80]] == [hit["memory_id"] for hit in semantic]
         assert all(abs(score - hit["score"]) < 1e-10 for (_, score), hit in zip(exact[:80], semantic))
-        if trace["schema_version"] == 2:
+        if trace["schema_version"] in {2, 3}:
             statuses = verify_enhanced_ranking(trace, retrieved, query_vector, query_rows, exported, question_norms)
             enhanced_queries += 1
             for name, state in statuses.items():
                 rerank_counts.setdefault(name, {})[state] = rerank_counts.get(name, {}).get(state, 0) + 1
+            if trace["schema_version"] == 3 and trace["global_rerank"]["status"] == "succeeded":
+                calls = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(
+                         (root / "api_calls" / f"retrieval_q{index:03d}").glob("*_chat_completion.json"))]
+                call = [c for c in calls if c["status"] == "complete"][-1]
+                payload = json.loads(call["request"]["messages"][-1]["content"])
+                assert set(payload) == {"query", "max_select", "candidates"}
+                assert payload["query"] == qa["question"]
+                info = trace["global_rerank"]
+                assert payload["max_select"] == info["max_select"]
+                rows = payload["candidates"]
+                assert len(rows) == len(info["input_ids"])
+                mapped = {}
+                for position, (row, mid) in enumerate(zip(rows, info["input_ids"]), 1):
+                    assert row == {"id": f"m{position:02d}", "text": exported[mid]["data"],
+                                   "observation_date": exported[mid]["metadata"].get("session_date"),
+                                   "source_dialogue_ids": exported[mid]["metadata"].get("source_dialogue_ids", [])}
+                    mapped[row["id"]] = mid
+                response = json.loads(call["response"]["choices"][0]["message"]["content"])
+                assert [mapped[key] for key in response["ids"]] == info["selected_ids"]
         else:
             assert trace["schema_version"] == 1
             bm25 = trace["channels"]["bm25"]["candidates"]

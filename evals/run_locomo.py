@@ -27,6 +27,7 @@ ROOT = PROJECT.parent
 sys.path.insert(0, str(PROJECT))
 from mini_vector import MiniVector, SQLiteVectorStore
 from mini_vector.config import setting
+from mini_vector.retrieval import rerank_fused
 
 HELPER = ROOT / "mem0/locomo_eval/run_locomo.py"
 spec = importlib.util.spec_from_file_location("locomo_reference", HELPER)
@@ -206,14 +207,31 @@ def evaluate(args):
         if unresolved or not set(gold).issubset(turn_ids):
             raise ValueError("Gold evidence does not match the input conversation")
     sources = [Path(__file__), PROJECT / "mini_vector/memory.py", PROJECT / "mini_vector/config.py",
-               PROJECT / "mini_vector/retrieval.py", PROJECT / "mini_vector/prompts.py", HELPER]
+               PROJECT / "mini_vector/retrieval.py", PROJECT / "mini_vector/prompts.py", HELPER,
+               PROJECT / "evals/verify_results.py", PROJECT / "evals/run_optimization.py"]
     retrieval_config = {"memory_query_enabled": not args.baseline,
-                        "rerank_mode": "none" if args.baseline else "llm"}
+                        "rerank_mode": "none" if args.baseline else args.rerank_mode,
+                        "rerank_limit": args.rerank_limit}
+    reused = None
+    if args.reuse_corpus:
+        source_root = args.reuse_corpus.resolve()
+        if source_root == root:
+            raise ValueError("Corpus and evaluation directories must differ")
+        reused = read_json(source_root / "run_metadata.json", {})
+        receipt = read_json(source_root / "corpus_receipt.json", {})
+        if receipt.get("status") != "complete" or receipt.get("ingestion_turns") != 419:
+            raise ValueError("Expected a fully committed registered corpus")
+        if (reused["identity"]["dataset_sha256"] != digest(dataset)
+                or reused["identity"]["source_sha256"] != {str(p): digest(p) for p in sources}
+                or not reused["identity"]["retrieval_config"]["memory_query_enabled"]):
+            raise ValueError("Corpus dataset, frozen source or question-index configuration differs")
     identity = {"dataset_sha256": digest(dataset), "source_sha256": {str(p): digest(p) for p in sources},
                 "models": {"extraction": "gpt-4o-mini", "answer": "gpt-4o-mini", "judge": "gpt-4o-mini",
                            "embedding": "text-embedding-3-small"}, "top_k": 20, "threshold": 0.1,
                 "retrieval_config": retrieval_config,
-                "ingestion_turns": len(turns), "questions": len(questions), "categories_included": [1, 2, 3, 4]}
+                "ingestion_turns": len(turns), "questions": len(questions), "categories_included": [1, 2, 3, 4],
+                "ingest_only": args.ingest_only,
+                "reuse_corpus": str(args.reuse_corpus.resolve()) if args.reuse_corpus else None}
     if previous and previous["identity"] != identity:
         raise ValueError("Run configuration, dataset or source code differs from the saved run")
     metadata = previous or {
@@ -221,9 +239,10 @@ def evaluate(args):
         "sample_id": "conv-26", "conversation_index": 0, "run_id": root.name,
         "created_at": now(), "source_dataset": str(dataset), "identity": identity,
         "python_version": sys.version, "evaluation_mode": "answer_and_judge", "answer_workers": args.workers,
-        "memory_reused": False, "scope": {"user_id": "conv-26", "run_id": root.name},
+        "memory_reused": reused is not None,
+        "scope": reused["scope"] if reused else {"user_id": "conv-26", "run_id": root.name},
         "storage": ("SQLite cosine + FTS5 BM25; original baseline" if args.baseline else
-                    "SQLite memory/query cosine + independent FTS5 BM25; per-channel LLM rerank + RRF"),
+                    f"SQLite memory/query cosine + independent FTS5 BM25 + RRF; rerank={args.rerank_mode}"),
         "extraction_temperature": "MiniVector default: omitted from API request",
         "answer_and_judge_temperature": 0,
         "input_format_and_prompts": "Identical helpers to Mem0 locomo_eval/run_locomo.py; frozen source copied",
@@ -233,6 +252,19 @@ def evaluate(args):
         "api_audit": "SDK requests/responses and usage; credentials/headers/endpoint omitted; SDK max_retries=0",
     }
     write_json(metadata_path, metadata)
+    if reused and not (root / "memory.sqlite3").exists():
+        # SQLite backup reads a consistent snapshot, without copying live WALs.
+        source_db = sqlite3.connect(f"file:{(source_root / 'memory.sqlite3').as_posix()}?mode=ro", uri=True)
+        temporary = root / "memory.copying.sqlite3"
+        destination_db = sqlite3.connect(temporary)
+        try:
+            source_db.backup(destination_db)
+        finally:
+            destination_db.close()
+            source_db.close()
+        os.replace(temporary, root / "memory.sqlite3")
+        preflight = read_json(source_root / "preflight.json", {})
+        write_json(root / "preflight.json", {**preflight, "reused_from": str(source_root)})
     if not previous:
         for path in sources:
             destination = root / "source_code" / path.relative_to(ROOT)
@@ -263,6 +295,13 @@ def evaluate(args):
                 found = probe.search("Alice Berlin", filters={"user_id": "probe"}, research_trace=trace)
                 if not added["results"] or not found["results"] or not trace["channels"]["bm25"]["candidates"]:
                     raise RuntimeError("Live extraction, embedding or BM25 preflight failed")
+                synthetic = [{"id": str(i), "memory": f"Alice has collection item {i}."}
+                             for i in range(60)]
+                for diverse in (False, True):
+                    _, checked = rerank_fused(audit.extract, "Which items does Alice collect?",
+                                             synthetic, 60, 20, diverse=diverse)
+                    if checked["status"] != "succeeded":
+                        raise RuntimeError("Global selection protocol preflight failed")
                 write_json(root / "preflight.json", {"status": "complete", "live_models": True,
                            "sqlite_fts5": True, "embedding_dimension": len(audit.embed(["dimension check"])[0]),
                            "excluded_from_benchmark": True, "completed_at": now()})
@@ -273,6 +312,8 @@ def evaluate(args):
         memory.store.db.execute("CREATE TABLE IF NOT EXISTS benchmark_ingestion (dialogue_id TEXT PRIMARY KEY, record TEXT NOT NULL)")
         memory.store.db.commit()
         committed = {row[0]: json.loads(row[1]) for row in memory.store.db.execute("SELECT dialogue_id, record FROM benchmark_ingestion")}
+        if reused and set(committed) != turn_ids:
+            raise ValueError("Reused corpus must already contain exactly all 419 turns")
         progress["completed_ingestion_turns"] = len(committed)
         for index, turn in enumerate(turns):
             turn_id = turn["dialogue_id"]
@@ -297,6 +338,13 @@ def evaluate(args):
             row["embedding"] = json.loads(row["embedding"])
         write_json(root / "memory_queries_embeddings.json", {"queries": query_vectors})
         print(f"INGESTION COMPLETE | memories={len(memories)}", flush=True)
+        if args.ingest_only:
+            write_json(root / "api_usage_summary.json", collect_usage(root))
+            write_json(root / "corpus_receipt.json", {"status": "complete", "ingestion_turns": len(turns),
+                       "memory_count": len(memories), "memory_query_count": len(query_vectors),
+                       "dataset_sha256": identity["dataset_sha256"], "completed_at": now()})
+            status("complete", "corpus_ready", memory_count=len(memories))
+            return
 
         for processed, (index, qa) in enumerate(questions, 1):
             path = root / "query_details" / f"{index:03d}.json"
@@ -382,11 +430,17 @@ def main():
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--rerank-mode", choices=["none", "llm", "global", "evidence"], default="llm")
+    parser.add_argument("--rerank-limit", type=int, default=30)
+    parser.add_argument("--ingest-only", action="store_true")
+    parser.add_argument("--reuse-corpus", type=Path)
     parser.add_argument("--baseline", action="store_true",
                         help="Disable memory questions and LLM reranking; use original retrieval")
     args = parser.parse_args()
     if not 1 <= args.workers <= 8:
         parser.error("workers must be between 1 and 8")
+    if args.rerank_limit < 1 or (args.ingest_only and (args.reuse_corpus or args.baseline)):
+        parser.error("Invalid rerank limit or corpus configuration")
     args.run_dir.mkdir(parents=True, exist_ok=True)
     with run_lock(args.run_dir):
         evaluate(args)
