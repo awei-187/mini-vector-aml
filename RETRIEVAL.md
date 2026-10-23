@@ -1,6 +1,6 @@
 # 记忆侧 Query 与逐通路 LLM 重排
 
-更新：2026-10-22。普通 `MiniVector` 和 AML 服务默认启用这两项能力。
+更新：2026-10-24。普通 `MiniVector` 和 AML 服务仍默认启用这两项能力；新增实验模式须显式选择。
 
 ## 写入与问题索引
 
@@ -55,10 +55,18 @@ memory = MiniVector(
 | --- | --- |
 | 默认 | 生成问题 + 三路独立召回 + 逐路 LLM 重排 + RRF |
 | `rerank_mode="none"` | 保留问题通路，关闭 LLM 重排，以原检索排名做 RRF |
+| `rerank_mode="global"` | 普通库实验模式：先融合，再单次选择相关证据 |
+| `rerank_mode="evidence"` | 普通库实验模式：先融合，再单次选择互补证据、减少重复表述 |
 | `memory_query_enabled=False` | 不生成或搜索问题；原记忆向量和 BM25 两路分别重排后 RRF |
 | 两项都关闭 | 使用旧版“向量候选 + BM25 加分”的检索算法，保留历史基线语义 |
 
 独立 BM25 召回和 RRF 也是相对旧基线的结构变化；两项功能开关的比较不能单独证明某一种改进的因果收益。
+
+新模式明确允许合法的部分选择，并稳定追加未选候选；未知或重复 ID 等输出仍完整回退。
+`rerank_limit` 在新模式中约束融合后的候选前缀，结果 `score` 仍为 RRF 分数，不代表模型给出的概率。
+2026-10-24 完整实验中，`none`、`global`、`evidence` 同一份新建语料均为 130/152，
+新模式增加调用开销，没有准确率净提升。机制、来源与限制见 [OPTIMIZATION.md](OPTIMIZATION.md)
+和 [RESULTS_20261024.md](RESULTS_20261024.md)。
 
 ## 现有数据库、更新与删除
 
@@ -77,6 +85,9 @@ AML 数据库身份现在绑定检索版本和这些选项。旧版 AML 数据�
 ## Trace、评测与参考实现
 
 增强检索的 `research_trace` 为 schema 2，记录三路原始候选、阈值后 ID、逐路重排输入/输出、耗时、成功或回退状态、RRF 顺序及实际返回结果。`explain=True` 返回原向量/BM25/问题向量分数、通路排名和 RRF 分数。旧基线路径仍使用 schema 1。
+
+融合后选择使用 schema 3，额外记录 `global_rerank` 的候选、合法选择及完整输出顺序，
+`stages.combined_order` 保留选择前 RRF 排名，`stages.selected_order` 记录选择后排名。
 
 LoCoMo runner 默认评测增强模式；`--baseline` 显式选择旧算法。新运行记录生成问题与重排提示源码哈希，并导出 `memory_queries_embeddings.json`。请使用新的运行目录，不能对历史运行绕过源码哈希校验续跑。该 runner 仍沿用历史 `text-embedding-3-small` 配置，不能把它描述成 AML 指定模型的正式比赛成绩。
 

@@ -57,20 +57,24 @@ corpus and is a historical reference; the new `rrf` arm is the controlled baseli
 The batch refuses configuration/source changes on resume. Corpus reuse requires
 the registered dataset and source identities and exactly all 419 ingestion
 markers. Successful utterances, retrievals, answers and judgments are committed
-independently for restart. Export hashes must match across all three corpora.
+independently for restart. Fact snapshot JSON values must match exactly, including
+array order; vector export hashes must match across all three corpora.
 Per-arm usage excludes shared ingestion and preflight, which are reported once
 under `corpus/api_usage_summary.json`.
 
 Run from this project in a visible Windows PowerShell window:
 
 ```powershell
-& .\evals\run_optimization.ps1 -RunDir 'E:\AML\mini-vector\eval_outputs\locomo_conv26_optimization_20261024_01'
+& .\evals\run_optimization.ps1 -RunDir 'E:\AML\mini-vector\eval_outputs\locomo_conv26_optimization_new'
 ```
 
 Re-running the same command resumes matching source and configuration. The batch
 produces a local `REPORT.md`, `comparison.json`, source hashes, SDK request/response
 audits, SQLite snapshots and per-arm independent `verification.json` files.
 `eval_outputs/`, runtime databases and private settings remain ignored by Git.
+Use a new run directory after source changes. The completed historical directory
+`locomo_conv26_optimization_20261024_01` retains the original evaluated identity;
+it must not be resumed with the later orchestration fix.
 
 ## Validation and interpretation
 
@@ -80,5 +84,8 @@ exercises the full 419-turn, three-arm checkpoint/reuse/verification path withou
 live calls; its fixture scores are never benchmark scores. Live preflight checks
 both 60-candidate selection contracts before the paid full ingestion.
 
-Live results are pending until the complete experiment passes independent checks.
-One conversation with the existing LLM judge cannot establish dataset-wide gains.
+The full live experiment completed with all three independent checks passing:
+all three arms scored 130/152 (85.53%). See [RESULTS_20261024.md](RESULTS_20261024.md)
+for paired changes, cost and limitations. This result does not justify enabling
+the new model selection modes by default. One conversation with the existing
+LLM judge cannot establish dataset-wide gains.

@@ -16,6 +16,15 @@ import run_locomo as runner
 ARMS = (("rrf", "none"), ("global", "global"), ("evidence", "evidence"))
 
 
+def verify_corpus_exports(corpus, child):
+    """Check values rather than insignificant object-key order in fact snapshots."""
+    for filename in ("memory_snapshot.json", "memories_embeddings.json", "memory_queries_embeddings.json"):
+        assert (corpus / filename).is_file() and (child / filename).is_file(), filename
+    assert runner.read_json(child / "memory_snapshot.json", {}) == runner.read_json(corpus / "memory_snapshot.json", {})
+    for filename in ("memories_embeddings.json", "memory_queries_embeddings.json"):
+        assert runner.digest(child / filename) == runner.digest(corpus / filename), filename
+
+
 def stage(root, extra):
     root.mkdir(parents=True, exist_ok=True)
     status = runner.read_json(root / "run_status.json", {})
@@ -64,9 +73,7 @@ def main():
                             str(child)], check=True)
         verification = runner.read_json(child / "verification.json", {})
         assert verification["status"] == "passed" and verification["questions"] == 152
-        # Identical fact and question vector exports establish the fixed corpus.
-        for filename in ("memory_snapshot.json", "memories_embeddings.json", "memory_queries_embeddings.json"):
-            assert runner.digest(child / filename) == runner.digest(corpus / filename)
+        verify_corpus_exports(corpus, child)
         groups[name] = {"summary": runner.read_json(child / "summary.json", {}),
                         "usage": runner.read_json(child / "api_usage_summary.json", {}),
                         "verification": verification}

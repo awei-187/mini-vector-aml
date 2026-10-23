@@ -1,0 +1,225 @@
+{
+  "evaluated_source_commit": "64522604e15c50d48a739224f68f7b3abf17edd6",
+  "snapshot_commit": "8955ef5cac9478162df082e5cd38bddf4ae285a9",
+  "completed_at": "2026-10-24T04:37:39.352280+08:00",
+  "dataset": "LoCoMo original conversation 0, conv-26",
+  "dataset_sha256": "553cd5a15e25f2ceccc6ed185221eba645080c93e5b91087560a91aa5961f365",
+  "ingestion_turns": 419,
+  "memory_count": 1711,
+  "memory_query_count": 4766,
+  "questions_per_arm": 152,
+  "categories_included": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "top_k": 20,
+  "rerank_limit": 60,
+  "arms": {
+    "rrf": {
+      "summary": {
+        "total": 152,
+        "correct": 130,
+        "accuracy": 0.8552631578947368,
+        "category_metrics": {
+          "1": {
+            "total": 32,
+            "correct": 24,
+            "accuracy": 0.75
+          },
+          "2": {
+            "total": 37,
+            "correct": 28,
+            "accuracy": 0.7567567567567568
+          },
+          "3": {
+            "total": 13,
+            "correct": 12,
+            "accuracy": 0.9230769230769231
+          },
+          "4": {
+            "total": 70,
+            "correct": 66,
+            "accuracy": 0.9428571428571428
+          }
+        },
+        "memory_count": 1711,
+        "ingestion_turns": 419,
+        "mean_retrieval_latency_ms": 5297.386048683142
+      },
+      "usage": {
+        "benchmark": {
+          "successful_calls": 456,
+          "failed_calls": 1,
+          "prompt_tokens": 267092,
+          "completion_tokens": 12712,
+          "total_tokens": 279804
+        }
+      },
+      "verification": "passed",
+      "rerank_counts": {
+        "semantic": {
+          "disabled": 152
+        },
+        "bm25": {
+          "disabled": 152
+        },
+        "memory_query": {
+          "disabled": 152
+        }
+      },
+      "paired_against_rrf": {}
+    },
+    "global": {
+      "summary": {
+        "total": 152,
+        "correct": 130,
+        "accuracy": 0.8552631578947368,
+        "category_metrics": {
+          "1": {
+            "total": 32,
+            "correct": 23,
+            "accuracy": 0.71875
+          },
+          "2": {
+            "total": 37,
+            "correct": 27,
+            "accuracy": 0.7297297297297297
+          },
+          "3": {
+            "total": 13,
+            "correct": 13,
+            "accuracy": 1.0
+          },
+          "4": {
+            "total": 70,
+            "correct": 67,
+            "accuracy": 0.9571428571428572
+          }
+        },
+        "memory_count": 1711,
+        "ingestion_turns": 419,
+        "mean_retrieval_latency_ms": 5373.984390131802
+      },
+      "usage": {
+        "benchmark": {
+          "successful_calls": 608,
+          "failed_calls": 0,
+          "prompt_tokens": 936073,
+          "completion_tokens": 14701,
+          "total_tokens": 950774
+        }
+      },
+      "verification": "passed",
+      "rerank_counts": {
+        "semantic": {
+          "disabled": 152
+        },
+        "bm25": {
+          "disabled": 152
+        },
+        "memory_query": {
+          "disabled": 152
+        },
+        "global": {
+          "succeeded": 151,
+          "fallback": 1
+        }
+      },
+      "paired_against_rrf": {
+        "gains": 2,
+        "losses": 2,
+        "changed_order": 79,
+        "changed_set": 27,
+        "changed_answer": 81
+      }
+    },
+    "evidence": {
+      "summary": {
+        "total": 152,
+        "correct": 130,
+        "accuracy": 0.8552631578947368,
+        "category_metrics": {
+          "1": {
+            "total": 32,
+            "correct": 24,
+            "accuracy": 0.75
+          },
+          "2": {
+            "total": 37,
+            "correct": 27,
+            "accuracy": 0.7297297297297297
+          },
+          "3": {
+            "total": 13,
+            "correct": 13,
+            "accuracy": 1.0
+          },
+          "4": {
+            "total": 70,
+            "correct": 66,
+            "accuracy": 0.9428571428571428
+          }
+        },
+        "memory_count": 1711,
+        "ingestion_turns": 419,
+        "mean_retrieval_latency_ms": 5839.915385525322
+      },
+      "usage": {
+        "benchmark": {
+          "successful_calls": 608,
+          "failed_calls": 2,
+          "prompt_tokens": 947525,
+          "completion_tokens": 14803,
+          "total_tokens": 962328
+        }
+      },
+      "verification": "passed",
+      "rerank_counts": {
+        "semantic": {
+          "disabled": 152
+        },
+        "bm25": {
+          "disabled": 152
+        },
+        "memory_query": {
+          "disabled": 152
+        },
+        "global": {
+          "succeeded": 152
+        }
+      },
+      "paired_against_rrf": {
+        "gains": 3,
+        "losses": 3,
+        "changed_order": 82,
+        "changed_set": 31,
+        "changed_answer": 79
+      }
+    }
+  },
+  "shared_ingestion_usage": {
+    "benchmark": {
+      "successful_calls": 2089,
+      "failed_calls": 0,
+      "prompt_tokens": 4050986,
+      "completion_tokens": 175777,
+      "total_tokens": 4226763
+    },
+    "preflight": {
+      "successful_calls": 9,
+      "failed_calls": 0,
+      "prompt_tokens": 12306,
+      "completion_tokens": 111,
+      "total_tokens": 12417
+    }
+  },
+  "limitations": [
+    "One conversation, one fresh stochastic corpus, no repeat trials",
+    "Existing generous gpt-4o-mini judge; no independent adjudication",
+    "Historical 135/152 corpus differs; not a controlled comparator"
+  ],
+  "orchestration_recovery": "Snapshot object-key order assertion; values identical; no experimental source or corpus change; completed RRF not repeated",
+  "offline_tests_after_orchestration_fix": 66
+}

@@ -2,6 +2,10 @@
 
 Mini Vector is a compact synchronous agent memory based on the non-graph OSS workflow in mem0. It uses ADD-only fact extraction, memory-side retrieval-question generation, SQLite persistence, independent fact-vector / question-vector / FTS5 BM25 retrieval, per-channel LLM reranking, and RRF fusion. SQLite scans scoped vectors exactly, so this implementation favors a small local deployment over an approximate-nearest-neighbor index. See [RETRIEVAL.md](RETRIEVAL.md) for the enhanced workflow, configuration, migration and local implementation references.
 
+Opt-in fused selection modes and a fixed-corpus LoCoMo experiment are described in
+[OPTIMIZATION.md](OPTIMIZATION.md). All three tested modes scored 130/152 on the
+first conversation; see [results and costs](RESULTS_20261024.md).
+
 ## Install and configure
 
 Python 3.10+ and SQLite with FTS5 are required. From PowerShell:
