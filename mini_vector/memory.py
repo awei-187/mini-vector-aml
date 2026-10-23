@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
 from .config import setting
+from .prompts import MEMORY_EXTRACTION_PROMPT, build_extraction_input
+from .retrieval import memory_queries, rerank_channel
 
 
 def _now() -> str:
@@ -79,6 +81,11 @@ class SQLiteVectorStore:
             );
             CREATE INDEX IF NOT EXISTS message_scope_idx ON messages(session_scope, seq);
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(id UNINDEXED, data);
+            CREATE TABLE IF NOT EXISTS memory_queries (
+                memory_id TEXT NOT NULL, position INTEGER NOT NULL,
+                query TEXT NOT NULL, embedding TEXT NOT NULL,
+                PRIMARY KEY (memory_id, position)
+            );
         """)
         self.db.commit()
 
@@ -92,13 +99,34 @@ class SQLiteVectorStore:
                   "metadata": {k: v for k, v in meta.items() if k not in reserved}}
         return result
 
-    def save(self, memory_id: str, text: str, vector: list[float], metadata: dict[str, Any]) -> None:
+    def save(self, memory_id: str, text: str, vector: list[float], metadata: dict[str, Any],
+             queries: list[tuple[str, list[float]]] = ()) -> None:
         with self.lock, self.db:
             self.db.execute("INSERT INTO memories VALUES (?, ?, ?, ?, ?)",
                             (memory_id, text, json.dumps(vector), hashlib.md5(text.encode()).hexdigest(),
                              json.dumps(metadata, ensure_ascii=False)))
             self.db.execute("INSERT INTO memory_fts(id, data) VALUES (?, ?)", (memory_id, text))
+            self._replace_queries(memory_id, queries)
             self._history(memory_id, None, text, "ADD", metadata["created_at"], metadata["updated_at"])
+
+    def _replace_queries(self, memory_id: str, queries) -> None:
+        self.db.execute("DELETE FROM memory_queries WHERE memory_id=?", (memory_id,))
+        self.db.executemany("INSERT INTO memory_queries VALUES (?, ?, ?, ?)",
+                            [(memory_id, index, query, json.dumps(vector))
+                             for index, (query, vector) in enumerate(queries)])
+
+    def replace_queries(self, memory_id: str, queries, *, expected_text: str) -> None:
+        with self.lock, self.db:
+            row = self.db.execute("SELECT data FROM memories WHERE id=?", (memory_id,)).fetchone()
+            if row is None or row[0] != expected_text:
+                raise ValueError("Memory changed while generating retrieval queries")
+            self._replace_queries(memory_id, queries)
+
+    def get_queries(self, memory_id: str) -> list[str]:
+        with self.lock:
+            rows = self.db.execute("SELECT query FROM memory_queries WHERE memory_id=? ORDER BY position",
+                                   (memory_id,)).fetchall()
+        return [row[0] for row in rows]
 
     def _history(self, mid: str, old: str | None, new: str | None, event: str, created: str, updated: str) -> None:
         self.db.execute("INSERT INTO history(id, old_memory, new_memory, event, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -132,6 +160,22 @@ class SQLiteVectorStore:
         scored = [(row, _cosine(vector, json.loads(row["embedding"]))) for row in rows]
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return [(self._row(row), score) for row, score in scored[:limit]]
+
+    def query_semantic(self, vector: list[float], scope: dict[str, str], limit: int
+                       ) -> list[tuple[dict[str, Any], float]]:
+        """Max question cosine per memory; deduplicate before applying the limit."""
+        clause, args = _scope_sql(scope)
+        with self.lock:
+            rows = self.db.execute(f"""SELECT m.*, q.embedding AS query_embedding
+                FROM memory_queries q JOIN memories m ON m.id=q.memory_id
+                WHERE {clause} ORDER BY m.rowid, q.position""", args).fetchall()
+        best = {}
+        for row in rows:
+            score = _cosine(vector, json.loads(row["query_embedding"]))
+            if row["id"] not in best or score > best[row["id"]][1]:
+                best[row["id"]] = (row, score)
+        ranked = sorted(best.values(), key=lambda pair: pair[1], reverse=True)
+        return [(self._row(row), score) for row, score in ranked[:limit]]
 
     def bm25(self, query: str, scope: dict[str, str], limit: int,
              research_trace: dict[str, Any] | None = None) -> dict[str, float]:
@@ -169,7 +213,8 @@ class SQLiteVectorStore:
             ])
         return normalized
 
-    def update(self, memory_id: str, text: str, vector: list[float] | None, metadata: dict[str, Any]) -> None:
+    def update(self, memory_id: str, text: str, vector: list[float] | None, metadata: dict[str, Any],
+               queries: list[tuple[str, list[float]]] = ()) -> None:
         with self.lock, self.db:
             row = self.db.execute("SELECT data FROM memories WHERE id=?", (memory_id,)).fetchone()
             if not row:
@@ -181,6 +226,7 @@ class SQLiteVectorStore:
                 self.db.execute("UPDATE memories SET data=?, embedding=?, hash=?, metadata=? WHERE id=?",
                                 (text, json.dumps(vector), hashlib.md5(text.encode()).hexdigest(),
                                  json.dumps(metadata, ensure_ascii=False), memory_id))
+                self._replace_queries(memory_id, queries)
             self.db.execute("DELETE FROM memory_fts WHERE id=?", (memory_id,))
             self.db.execute("INSERT INTO memory_fts(id, data) VALUES (?, ?)", (memory_id, text))
             self._history(memory_id, row[0], text, "UPDATE", metadata["created_at"], metadata["updated_at"])
@@ -194,6 +240,7 @@ class SQLiteVectorStore:
             self.db.execute("DELETE FROM memories WHERE id=?", (memory_id,))
             self.db.execute("DELETE FROM memory_fts WHERE id=?", (memory_id,))
             now = _now()
+            self.db.execute("DELETE FROM memory_queries WHERE memory_id=?", (memory_id,))
             self._history(memory_id, row[0], None, "DELETE", meta["created_at"], now)
 
     def delete_all(self, scope: dict[str, str]) -> int:
@@ -226,13 +273,27 @@ class SQLiteVectorStore:
 
 
 class MiniVector:
-    """ADD-only conversational extraction and scoped vector memory management."""
+    """ADD-only extraction, memory-side questions and scoped channel retrieval."""
 
     def __init__(self, db_path: str = "mini_vector.sqlite3", *, base_url: str | None = None,
                  chat_model: str | None = None, embedding_model: str | None = None,
                  llm: Callable[[list[dict[str, str]]], str] | None = None,
                  embedder: Callable[[list[str]], list[list[float]]] | None = None,
-                 store: SQLiteVectorStore | None = None):
+                 store: SQLiteVectorStore | None = None,
+                 memory_query_enabled: bool = True, queries_per_memory: int = 3,
+                 rerank_mode: str = "llm", rerank_limit: int = 30):
+        if type(memory_query_enabled) is not bool:
+            raise ValueError("memory_query_enabled must be boolean")
+        if type(queries_per_memory) is not int or queries_per_memory < 1:
+            raise ValueError("queries_per_memory must be a positive integer")
+        if rerank_mode not in {"none", "llm"}:
+            raise ValueError("rerank_mode must be 'none' or 'llm'")
+        if type(rerank_limit) is not int or rerank_limit < 1:
+            raise ValueError("rerank_limit must be a positive integer")
+        self.memory_query_enabled = memory_query_enabled
+        self.queries_per_memory = queries_per_memory
+        self.rerank_mode = rerank_mode
+        self.rerank_limit = rerank_limit
         self.store = store or SQLiteVectorStore(db_path)
         self.llm, self.embedder = llm, embedder
         self.chat_model = chat_model or setting("OPENAI_CHAT_MODEL", "gpt-4o-mini")
@@ -262,6 +323,17 @@ class MiniVector:
             raise ValueError("Embedding provider returned an invalid batch")
         return [[float(x) for x in vector] for vector in vectors]
 
+    def _query_records(self, texts: list[str]) -> list[list[tuple[str, list[float]]]]:
+        if not self.memory_query_enabled or not texts:
+            return [[] for _ in texts]
+        try:
+            groups = memory_queries(self._complete, texts, self.queries_per_memory)
+        except Exception as exc:
+            raise RuntimeError("Memory query generation failed") from exc
+        flat = [query for group in groups for query in group]
+        vectors = iter(self._embed(flat))
+        return [[(query, next(vectors)) for query in group] for group in groups]
+
     @staticmethod
     def _messages(value: str | dict[str, Any] | list[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(value, str):
@@ -287,12 +359,12 @@ class MiniVector:
         session = json.dumps(scope, sort_keys=True)
         output = []
         if not infer:
-            for msg in msgs:
-                if msg["role"] == "system":
-                    continue
+            raw = [msg for msg in msgs if msg["role"] != "system"]
+            queries = self._query_records([msg["content"] for msg in raw])
+            for msg, query_records in zip(raw, queries):
                 text = msg["content"]
                 mid = self._persist(text, self._embed([text])[0], {**(metadata or {}), **scope,
-                               "role": msg["role"], **({"actor_id": msg["name"]} if msg.get("name") else {})})
+                               "role": msg["role"], **({"actor_id": msg["name"]} if msg.get("name") else {})}, query_records)
                 output.append({"id": mid, "memory": text, "event": "ADD"})
             self.store.save_messages(msgs, session)
             return {"results": output}
@@ -305,9 +377,9 @@ class MiniVector:
         current_vector = self._embed([current])[0]
         similar = self.store.semantic(current_vector, scope, 10)
         existing = [{"id": item["id"], "text": item["memory"]} for item, _ in similar]
-        prompt = """Extract durable, useful facts stated in New Messages only. Include user facts, preferences, plans, and genuinely new assistant actions or recommendations; ignore greetings and assistant paraphrases. Resolve references using recent context, retain precise entities/numbers/dates, and never infer unsupported facts. Return JSON exactly as {\"memory\":[{\"text\":\"self-contained fact\"}]}. Add only: do not update or delete existing facts. Skip a fact only when the same fact is already present.\n\n""" + json.dumps({"recent_messages": recent, "new_messages": msgs, "existing_memories": existing}, ensure_ascii=False)
+        prompt = build_extraction_input(msgs, recent, existing, metadata)
         try:
-            response = self._complete([{"role": "system", "content": "You extract accurate, concise agent memories from conversation."},
+            response = self._complete([{"role": "system", "content": MEMORY_EXTRACTION_PROMPT},
                                        {"role": "user", "content": prompt}])
         except Exception as exc:
             raise RuntimeError(f"Memory extraction request failed: {exc}") from exc
@@ -321,29 +393,43 @@ class MiniVector:
             raise ValueError(f"Could not parse memory extraction JSON: {exc}") from exc
         # Save context even when extraction returns no facts, matching mem0's workflow.
         if facts:
-            vectors = self._embed(facts)
             hashes = [hashlib.md5(f.encode()).hexdigest() for f in facts]
             duplicates = self.store.duplicate_hashes(scope, hashes)
             seen: set[str] = set()
-            for fact, vector, digest in zip(facts, vectors, hashes):
+            unique = []
+            for fact, digest in zip(facts, hashes):
                 if digest in duplicates or digest in seen:
                     continue
                 seen.add(digest)
-                mid = self._persist(fact, vector, {**(metadata or {}), **scope})
+                unique.append(fact)
+            queries = self._query_records(unique)
+            vectors = self._embed(unique) if unique else []
+            for fact, vector, query_records in zip(unique, vectors, queries):
+                mid = self._persist(fact, vector, {**(metadata or {}), **scope}, query_records)
                 output.append({"id": mid, "memory": fact, "event": "ADD"})
         self.store.save_messages(msgs, session)
         return {"results": output}
 
-    def _persist(self, text: str, vector: list[float], metadata: dict[str, Any]) -> str:
+    def _persist(self, text: str, vector: list[float], metadata: dict[str, Any],
+                 queries: list[tuple[str, list[float]]] = ()) -> str:
         now = _now()
         mid = str(uuid.uuid4())
         payload = {**metadata, "created_at": metadata.get("created_at", now), "updated_at": now}
-        self.store.save(mid, text, vector, payload)
+        self.store.save(mid, text, vector, payload, queries)
         return mid
 
     def search(self, query: str, *, top_k: int = 20, filters: dict[str, Any] | None = None,
                threshold: float = 0.1, explain: bool = False,
                research_trace: dict[str, Any] | None = None) -> dict[str, list[dict[str, Any]]]:
+        if not self.memory_query_enabled and self.rerank_mode == "none":
+            return self._search_legacy(query, top_k=top_k, filters=filters, threshold=threshold,
+                                       explain=explain, research_trace=research_trace)
+        return self._search_channels(query, top_k=top_k, filters=filters, threshold=threshold,
+                                     explain=explain, research_trace=research_trace)
+
+    def _search_legacy(self, query: str, *, top_k: int = 20, filters: dict[str, Any] | None = None,
+                       threshold: float = 0.1, explain: bool = False,
+                       research_trace: dict[str, Any] | None = None) -> dict[str, list[dict[str, Any]]]:
         scope = _scope(filters)
         if not isinstance(query, str) or not query.strip() or top_k < 1 or not 0 <= threshold <= 1:
             raise ValueError("query must be non-empty, top_k positive, and threshold between 0 and 1")
@@ -404,6 +490,104 @@ class MiniVector:
             })
         return {"results": results}
 
+    def _search_channels(self, query: str, *, top_k: int, filters, threshold: float,
+                         explain: bool, research_trace) -> dict[str, list[dict[str, Any]]]:
+        scope = _scope(filters)
+        if not isinstance(query, str) or not query.strip() or top_k < 1 or not 0 <= threshold <= 1:
+            raise ValueError("query must be non-empty, top_k positive, and threshold between 0 and 1")
+        vector = self._embed([query.strip()])[0]
+        candidate_limit = max(top_k * 4, 60)
+        semantic = self.store.semantic(vector, scope, candidate_limit)
+        generated = (self.store.query_semantic(vector, scope, candidate_limit)
+                     if self.memory_query_enabled else [])
+        bm25_trace = {} if research_trace is not None else None
+        lexical_scores = self.store.bm25(query, scope, candidate_limit, research_trace=bm25_trace)
+        lexical = [(item, score) for mid, score in lexical_scores.items()
+                   if (item := self.store.get(mid)) is not None]
+        channels = {"semantic": semantic, "bm25": lexical, "memory_query": generated}
+        merged, channel_trace = {}, {}
+        active = 0
+        for name, candidates in channels.items():
+            eligible = [(item, score) for item, score in candidates
+                        if name == "bm25" or score >= threshold]
+            ranked, rerank_trace = rerank_channel(
+                self._complete, query, [item for item, _ in eligible],
+                self.rerank_limit, self.rerank_mode == "llm")
+            active += bool(ranked)
+            for rank, item in enumerate(ranked, start=1):
+                entry = merged.setdefault(item["id"], {"item": item, "rrf": 0.0, "ranks": {}})
+                entry["rrf"] += 1 / (60 + rank)
+                entry["ranks"][name] = rank
+            if research_trace is not None:
+                channel_trace[name] = {
+                    "status": "recorded", "candidates": [
+                        {"rank": rank, "memory_id": item["id"], "score": float(score),
+                         "text": item["memory"], "metadata": _trace_metadata(item.get("metadata"))}
+                        for rank, (item, score) in enumerate(candidates, start=1)],
+                    "eligible_ids": [item["id"] for item, _ in eligible],
+                    "rerank": rerank_trace,
+                }
+        # Equal-weight RRF of channel ranks, normalized to [0, 1]. The LLM only
+        # changes the head of each channel; distinct candidates survive fusion.
+        ordered = sorted(merged.values(), key=lambda entry: (-entry["rrf"], entry["item"]["id"]))
+        semantic_scores = {item["id"]: score for item, score in semantic}
+        query_scores = {item["id"]: score for item, score in generated}
+        results = []
+        for entry in ordered[:top_k]:
+            item = entry["item"]
+            score = entry["rrf"] / (active / 61)
+            result = {**item, "score": min(1.0, score)}
+            if explain or research_trace is not None:
+                result["score_details"] = {
+                    "semantic_score": semantic_scores.get(item["id"], 0.0),
+                    "bm25_score": lexical_scores.get(item["id"], 0.0),
+                    "memory_query_score": query_scores.get(item["id"], 0.0),
+                    "channel_ranks": entry["ranks"], "rrf_score": entry["rrf"],
+                    "final_score": result["score"],
+                }
+            results.append(result)
+        if research_trace is not None:
+            if bm25_trace:
+                channel_trace["bm25"].update(status=bm25_trace["status"],
+                                             lexical_details=bm25_trace)
+            research_trace.clear()
+            research_trace.update({
+                "schema_version": 2, "engine": "mini-vector", "candidate_limit": candidate_limit,
+                "top_k": top_k, "threshold": threshold,
+                "memory_query_enabled": self.memory_query_enabled,
+                "rerank_mode": self.rerank_mode, "rerank_limit": self.rerank_limit,
+                "score_semantics": {"final": "equal-weight channel RRF (k=60), normalized by active_channels/61"},
+                "channels": channel_trace,
+                "stages": {"combined_order": [entry["item"]["id"] for entry in ordered],
+                           "final": [{"rank": rank, "memory_id": item["id"], "score": item["score"],
+                                      "score_details": item["score_details"],
+                                      "metadata": _trace_metadata(item.get("metadata"))}
+                                     for rank, item in enumerate(results, start=1)]},
+                "source_attribution": "memory metadata as recorded; absent source IDs remain unknown",
+            })
+            if not explain:
+                for item in results:
+                    item.pop("score_details", None)
+        return {"results": results}
+
+    def backfill_memory_queries(self, *, filters: dict[str, Any] | None = None) -> dict[str, int]:
+        """Explicitly index existing memories; skip already indexed rows on restart.
+
+        Processes one memory at a time. Completed rows remain committed if a later
+        provider call fails. Never invoked implicitly by opening or searching a DB.
+        """
+        scope = _scope(filters)
+        if not self.memory_query_enabled:
+            raise ValueError("Enable memory queries before backfilling")
+        indexed = 0
+        for item in self.store.list(scope):
+            if self.store.get_queries(item["id"]):
+                continue
+            records = self._query_records([item["memory"]])[0]
+            self.store.replace_queries(item["id"], records, expected_text=item["memory"])
+            indexed += 1
+        return {"indexed": indexed}
+
     def get(self, memory_id: str) -> dict[str, Any] | None:
         return self.store.get(memory_id)
 
@@ -417,13 +601,14 @@ class MiniVector:
         if text is None and metadata is None:
             raise ValueError("Provide text or metadata to update")
         new_text = text if text is not None else old["memory"]
+        queries = self._query_records([new_text])[0] if text is not None else []
         vector = self._embed([new_text])[0] if text is not None else None
         immutable = {"user_id", "agent_id", "run_id", "role", "actor_id", "attributed_to",
                      "id", "memory", "hash", "data", "created_at", "updated_at", "metadata"}
         new_meta = {**old.get("metadata", {}), **{k: old[k] for k in immutable & old.keys()}}
         new_meta.update({k: v for k, v in (metadata or {}).items() if k not in immutable})
         new_meta.update(created_at=old["created_at"], updated_at=_now())
-        self.store.update(memory_id, new_text, vector, new_meta)
+        self.store.update(memory_id, new_text, vector, new_meta, queries)
         return {"message": "Memory updated successfully"}
 
     def delete(self, memory_id: str) -> dict[str, str]:

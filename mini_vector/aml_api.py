@@ -103,7 +103,8 @@ def _error_status(exc: Exception) -> tuple[int, str]:
 
 
 class AMLBackend:
-    def __init__(self, path: str, *, llm=None, embedder=None):
+    def __init__(self, path: str, *, llm=None, embedder=None, memory_query_enabled=True,
+                 rerank_mode="llm", queries_per_memory=3, rerank_limit=30):
         base_url = setting("OPENAI_BASE_URL")
         embedding = embedding_config() if embedder is None else None
         self.store = AMLStore(path, {
@@ -112,6 +113,9 @@ class AMLBackend:
             "embedding_provider_hash": embedding.provider_hash if embedding else "injected",
             "embedding_dimensions": EMBEDDING_DIMENSIONS if embedding else None,
             "infer": True, "threshold": 0.1,
+            "retrieval_version": 2, "memory_query_enabled": memory_query_enabled,
+            "queries_per_memory": queries_per_memory, "rerank_mode": rerank_mode,
+            "rerank_limit": rerank_limit, "fusion": "rrf_60",
         })
         self.operation_lock = threading.RLock()
         self.client = None
@@ -126,7 +130,7 @@ class AMLBackend:
             if embedder is None:
                 self.embedding_client = create_embedding_client(embedding)
 
-            def extract(messages):
+            def complete(messages):
                 messages = [dict(message) for message in messages]
                 messages[0]["content"] += (" Optional timestamp fields are source-message times in Unix milliseconds; "
                                             "they are not necessarily the time of the described event.")
@@ -150,8 +154,11 @@ class AMLBackend:
                 self.store.check_dimension(dimension)
                 return vectors
 
-            self.memory = MiniVector(store=self.store, llm=llm or extract, embedder=checked_embed,
-                                     chat_model=CHAT_MODEL, embedding_model=EMBEDDING_MODEL)
+            self.memory = MiniVector(store=self.store, llm=llm or complete, embedder=checked_embed,
+                                     chat_model=CHAT_MODEL, embedding_model=EMBEDDING_MODEL,
+                                     memory_query_enabled=memory_query_enabled,
+                                     queries_per_memory=queries_per_memory,
+                                     rerank_mode=rerank_mode, rerank_limit=rerank_limit)
         except BaseException:
             self.close()
             raise
@@ -196,7 +203,9 @@ class AMLBackend:
 
 
 def create_app(*, db_path: str | Path | None = None, api_token: str | None = None,
-               llm=None, embedder=None) -> FastAPI:
+               llm=None, embedder=None, memory_query_enabled: bool = True,
+               rerank_mode: str = "llm", queries_per_memory: int = 3,
+               rerank_limit: int = 30) -> FastAPI:
     token = api_token if api_token is not None else os.getenv("AML_API_TOKEN") or setting("AML_API_TOKEN")
     if not token or not token.strip():
         raise ValueError("AML_API_TOKEN is required")
@@ -205,7 +214,9 @@ def create_app(*, db_path: str | Path | None = None, api_token: str | None = Non
     @asynccontextmanager
     async def lifespan(app):
         try:
-            app.state.backend = AMLBackend(path, llm=llm, embedder=embedder)
+            app.state.backend = AMLBackend(path, llm=llm, embedder=embedder,
+                memory_query_enabled=memory_query_enabled, rerank_mode=rerank_mode,
+                queries_per_memory=queries_per_memory, rerank_limit=rerank_limit)
         except Exception:
             # Prevent provider/SQLite exceptions with embedded secrets or paths from reaching server logs.
             raise RuntimeError("AML startup failed: check credentials, database identity and single-process lease") from None
@@ -271,13 +282,19 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--db-path", type=Path)
+    parser.add_argument("--disable-memory-queries", action="store_true")
+    parser.add_argument("--rerank-mode", choices=("none", "llm"), default="llm")
+    parser.add_argument("--queries-per-memory", type=int, default=3)
+    parser.add_argument("--rerank-limit", type=int, default=30)
     args = parser.parse_args()
     import uvicorn
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     for name in ("openai", "httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.CRITICAL)
     try:
-        app = create_app(db_path=args.db_path)
+        app = create_app(db_path=args.db_path, memory_query_enabled=not args.disable_memory_queries,
+                         rerank_mode=args.rerank_mode, queries_per_memory=args.queries_per_memory,
+                         rerank_limit=args.rerank_limit)
     except ValueError:
         parser.exit(2, "AML_API_TOKEN must be configured before starting the service.\n")
     uvicorn.run(app, host=args.host, port=args.port, workers=1, access_log=False)

@@ -1,0 +1,175 @@
+{
+  "snapshot": "current-research-20261024",
+  "based_on_published_commit": "a001d583dae81b9cc4565984bd996c1108f0f734",
+  "purpose": "Exact current research source before optimization; deployed main is unchanged.",
+  "excluded": [
+    "credentials and private environment files",
+    "runtime and deployment state",
+    "databases",
+    "bulk experiment inputs, vectors and API logs",
+    "generated package metadata and caches"
+  ],
+  "source_files": {
+    ".env.example": {
+      "sha256": "57fa9a9f3a526b5b3a75275dc7d1d8d11d6bae4bbd331cc95eb735eda3090459",
+      "git_blob_sha": "c988e3f65543d028149ebb0569bb9616ba6fac74"
+    },
+    ".gitignore": {
+      "sha256": "2e37a2eb0e421fd59523621130c4255e2605aaecf39f0b89629181fae5acd4d9",
+      "git_blob_sha": "14e72f26b428396dbf79d6603af557addd77cd79"
+    },
+    "pyproject.toml": {
+      "sha256": "98030d1e2fef4232004c084bb30f3cab5c08c782daff71bd46b512cd84d7b1f1",
+      "git_blob_sha": "7d52c906ace49a51fed04b09b6fb2a398ddc9723"
+    },
+    "README.md": {
+      "sha256": "313dc42058d48b6fc831b76106b67a506898c622a9f328ca7a64d25924748c66",
+      "git_blob_sha": "8a731ce500b0d8232c297537a4027f50c32baf28"
+    },
+    "RETRIEVAL.md": {
+      "sha256": "89cdbd9e4958b3c523a4a48e0ae166de27152e0821eebc6406a8b7533f9e5cc1",
+      "git_blob_sha": "445cf2bc13ae6e90b7dcac77b81537f24736a522"
+    },
+    "AML_API.md": {
+      "sha256": "617c3de2134a99da78033383dbe1e30e406dd0f3bf5dcddd5494c21fecae62e3",
+      "git_blob_sha": "d7065bccfdfd90123ced9e8d7de23e3944481351"
+    },
+    "workflow.md": {
+      "sha256": "20ebcd1c62518c124ca0b67981a3be11f4611bab87a1f7a81913b1272f2c2af0",
+      "git_blob_sha": "e6d3194eb971a60a1f6cbe803e07973b2eff1233"
+    },
+    "mini_vector/__init__.py": {
+      "sha256": "621742ca39af7edeb796f17586dca83135c5e1de49a196a3b2fb52caabfb7dc1",
+      "git_blob_sha": "02d65c22882af67ba4e0a01130159daf6270944b"
+    },
+    "mini_vector/aml_api.py": {
+      "sha256": "400fd0e3eae028469f92a423c99372434b8caa7000bad97aa0a3ac4846d97a00",
+      "git_blob_sha": "8e3e8f59c64b972f35989210c78cda9e9f9550a7"
+    },
+    "mini_vector/aml_config.py": {
+      "sha256": "7de1b8cbae9f0ad0ba1f598ea12f604cd24ebc0816b5e19c4315cb41924822b0",
+      "git_blob_sha": "43c5a8a5c59c063f10b1582d276a7b9de57ee129"
+    },
+    "mini_vector/aml_store.py": {
+      "sha256": "238de580d32a26174e67d5cd9a9694d0fbb170a8aa5c7d13ba7d00098e71b48c",
+      "git_blob_sha": "2c97997ab749c57a3f597930e2df07286be23aa3"
+    },
+    "mini_vector/config.py": {
+      "sha256": "72c0ac19d09703841823e61904e05c92d2c82e1bbb2d440e674727a152872afb",
+      "git_blob_sha": "5f2047bec6db9077ee6bc2c52c69a71152b05936"
+    },
+    "mini_vector/memory.py": {
+      "sha256": "89141cb24cea7cff0a1baf582a971a5ff5b3ce7ded5e95a4b0d701ffa5239901",
+      "git_blob_sha": "37e4c32c457f671a64007bf887c09d008a5c6649"
+    },
+    "mini_vector/prompts.py": {
+      "sha256": "5d8a3b5dc31ec842e12e0f4737402360a8fcaace876a7b1ed2c4bde9f1785e17",
+      "git_blob_sha": "d5774175b22e8862a47f0ebfebcc58109cd0ace3"
+    },
+    "mini_vector/retrieval.py": {
+      "sha256": "41affa1d7fb4913912991df93aaf3ef3eb30894a6dae017fe6218087b00f6403",
+      "git_blob_sha": "86c978471955f4f4234163e37a5030422c5c83ee"
+    },
+    "tests/test_aml_api.py": {
+      "sha256": "1e1cba4439b123100b0011d6f4d4dfa8c4fe684a28aab33ee5a314da42f116ab",
+      "git_blob_sha": "242e711638e4b820d8b7194bf944034bf7b1ca58"
+    },
+    "tests/test_aml_config.py": {
+      "sha256": "d72e3044c5b15acf77e9ba0441973d51161621e41d16e07edfed94bc7e155d96",
+      "git_blob_sha": "59d771843cfa5a2f9a136ef5a3047ab37ac5a909"
+    },
+    "tests/test_config.py": {
+      "sha256": "ffc73b30f5d639b598f31c821a8374ed68266892090be76848319ba204c38ed2",
+      "git_blob_sha": "622c7b53c8f115134f904a1e00827dbc32916edc"
+    },
+    "tests/test_eval_verifier.py": {
+      "sha256": "37f9f2702e2fa589218850e691e91dd71ab3bbd2f2d4b988304626991df01589",
+      "git_blob_sha": "41dd28781e32cf72d9a66cc2e23af691ae6d1a92"
+    },
+    "tests/test_extraction_prompt.py": {
+      "sha256": "f1662661daed987cad416465c8ea55b47ebabf672631e38eead5a7245de09dd3",
+      "git_blob_sha": "70dab18ebbb2f2cda5fb81c74e2e1aa67e2a31fd"
+    },
+    "tests/test_locomo_eval.py": {
+      "sha256": "4a7c5705d6a3fdad6034dbce35e4d19fe1333b53527ece26b057dba413b19046",
+      "git_blob_sha": "f28589ecb59e6abb45c3cf46a3895c990be97966"
+    },
+    "tests/test_memory.py": {
+      "sha256": "a1f454647d0d77ebddd5aa8473e4fee8a98837d8086bfb91572d4241023116c7",
+      "git_blob_sha": "dcf09bafab71eca551006792462d1ef57c578a77"
+    },
+    "tests/test_retrieval.py": {
+      "sha256": "9023968e8a0c715765ba5f15f44e89ab0ad8dc61aac34d9b875c140f09f49b4f",
+      "git_blob_sha": "de102311c99ba16f4e546b9f6fa9555345fd98ce"
+    },
+    "evals/README.md": {
+      "sha256": "4f15a1752bbc4cb5f7a8241267c0682af8e83aa42c5c27736b92b6689bd04924",
+      "git_blob_sha": "0c439d6dc490555efa10194e2b049e6c9e16860f"
+    },
+    "evals/run_locomo.ps1": {
+      "sha256": "87a2f45c57da6dd74d36ff359b9478428dd6ebfabb280c7e1a6ffe30dccdecd4",
+      "git_blob_sha": "2228fc2faadf22108f2f2ddf93015af4e500b609"
+    },
+    "evals/run_locomo.py": {
+      "sha256": "a4028829a4b7669f7f198a375eef29f8093921523c175f68d670e2822e35eaa7",
+      "git_blob_sha": "22405c54e3eeec21869958929bed84209ddc9401"
+    },
+    "evals/verify_results.py": {
+      "sha256": "3565daa95071be4a6199b33052aa96676d7a0e80f5f66f677d152a88a5909c37",
+      "git_blob_sha": "74988d0f8ef1c6efabfa3571ed8c91b8e1c2be69"
+    },
+    "scripts/verify_aml_api.py": {
+      "sha256": "8884e9f5882a0f66b6c4672a6f71d7050e944e54111277f30215aed6eed7b3e4",
+      "git_blob_sha": "f273f9de3e9628f0916fd6ffedfd19618a67a371"
+    },
+    "LICENSE": {
+      "sha256": "bdc813b8cc3d9cbd6b26024eacc677cba327eeb6e598e02cc291b0b63ca5b05e",
+      "git_blob_sha": "1b2acbdbb404ef731b73febe6526e7e30b7135dc"
+    },
+    "NOTICE": {
+      "sha256": "0e3dbe7c6904018ae61fddd51f40631f6cd431e0fd3b45df72c89e9fba5d0efc",
+      "git_blob_sha": "4f04460e3ccfd9183aed9ea493c0dcdc601324da"
+    },
+    ".gitattributes": {
+      "sha256": "5a9c504402dbbea25e5e8f9cfeb8eb5e49acdf39be05de5c3a5a061c656b0b52",
+      "git_blob_sha": "059b1d7c8b41dbbf513f29a63737cfa57151cfd2"
+    },
+    "third_party/mem0/LICENSE": {
+      "sha256": "bdc813b8cc3d9cbd6b26024eacc677cba327eeb6e598e02cc291b0b63ca5b05e",
+      "git_blob_sha": "1b2acbdbb404ef731b73febe6526e7e30b7135dc"
+    }
+  },
+  "latest_saved_evaluation": {
+    "run_id": "locomo_conv26_newprompt_enhanced_20261023_01",
+    "total": 152,
+    "correct": 135,
+    "accuracy": 0.8881578947368421,
+    "category_metrics": {
+      "1": {
+        "total": 32,
+        "correct": 26,
+        "accuracy": 0.8125
+      },
+      "2": {
+        "total": 37,
+        "correct": 32,
+        "accuracy": 0.8648648648648649
+      },
+      "3": {
+        "total": 13,
+        "correct": 13,
+        "accuracy": 1.0
+      },
+      "4": {
+        "total": 70,
+        "correct": 64,
+        "accuracy": 0.9142857142857143
+      }
+    },
+    "memory_count": 1759,
+    "ingestion_turns": 419,
+    "mean_retrieval_latency_ms": 11455.118839473047,
+    "rerank_attempts": 456,
+    "rerank_applied": 0
+  }
+}

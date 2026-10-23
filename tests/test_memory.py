@@ -27,7 +27,8 @@ class MiniVectorTests(unittest.TestCase):
             self.embedding_calls.extend(texts)
             return embed(texts)
 
-        self.memory = MiniVector(db_path=":memory:", llm=llm, embedder=tracked_embed)
+        self.memory = MiniVector(db_path=":memory:", llm=llm, embedder=tracked_embed,
+                                 memory_query_enabled=False, rerank_mode="none")
 
     def tearDown(self):
         self.memory.close()
@@ -108,7 +109,8 @@ class MiniVectorTests(unittest.TestCase):
         if os.path.exists(path):
             os.remove(path)
         same_vectors = lambda texts: [[1.0, 0.0] for _ in texts]
-        first = MiniVector(db_path=path, llm=lambda _messages: '{"memory":[]}', embedder=same_vectors)
+        first = MiniVector(db_path=path, llm=lambda _messages: '{"memory":[]}', embedder=same_vectors,
+                           memory_query_enabled=False, rerank_mode="none")
         try:
             first.add("banana preference", user_id="a", infer=False)
             first.add("pear preference", user_id="a", infer=False)
@@ -117,7 +119,8 @@ class MiniVectorTests(unittest.TestCase):
             first.close()
             first = None
 
-            reopened = MiniVector(db_path=path, llm=lambda _messages: '{"memory":[]}', embedder=same_vectors)
+            reopened = MiniVector(db_path=path, llm=lambda _messages: '{"memory":[]}', embedder=same_vectors,
+                                  memory_query_enabled=False, rerank_mode="none")
             try:
                 self.assertEqual(reopened.get(banana_id)["memory"], "banana preference")
                 history = reopened.history(banana_id)["history"]

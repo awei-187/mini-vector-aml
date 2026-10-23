@@ -1,79 +1,53 @@
-# Mini Vector AML baseline
+# Mini Vector Memory
 
-A compact synchronous memory service for the AML Textual / Open-source Methods
-track. This repository freezes the deployed baseline, using ADD-only fact
-extraction, exact cosine vector retrieval and SQLite FTS5 BM25 reranking.
-Search returns memory evidence, not a generated answer. This version does not
-contain later retrieval-question generation, per-channel LLM reranking or RRF.
+Mini Vector is a compact synchronous agent memory based on the non-graph OSS workflow in mem0. It uses ADD-only fact extraction, memory-side retrieval-question generation, SQLite persistence, independent fact-vector / question-vector / FTS5 BM25 retrieval, per-channel LLM reranking, and RRF fusion. SQLite scans scoped vectors exactly, so this implementation favors a small local deployment over an approximate-nearest-neighbor index. See [RETRIEVAL.md](RETRIEVAL.md) for the enhanced workflow, configuration, migration and local implementation references.
 
-The AML adapter fixes chat to `gpt-4o-mini` and embeddings to Qwen
-`text-embedding-v4` (1024 dimensions). Ordinary library embedding defaults are
-separate and do not change the competition service configuration.
+## Install and configure
 
-## Install
+Python 3.10+ and SQLite with FTS5 are required. From PowerShell:
 
-Python 3.10+ with SQLite FTS5 is required. The following commands target Linux,
-from the repository root; each code block contains one command.
-
-```bash
-python3 -m venv .venv
+```powershell
+cd E:\AML\mini-vector
 ```
 
-```bash
-.venv/bin/python -m pip install -e '.[api]'
+```powershell
+D:\conda\envs\agent_aml\python.exe -m pip install -e .
 ```
 
-Copy `.env.example` to `.env`, fill your chat endpoint/key and a stable random
-`AML_API_TOKEN`. Copy `qwen.env.example` to a private configuration file, set its
-embedding endpoint/key, and set `AML_EMBEDDING_ENV_FILE` to that absolute path.
-Choose a writable `AML_DB_PATH`. The endpoint must support the required models;
-the service does not silently substitute them. Never commit populated configs.
+Copy `.env.example` to `.env` in the working directory, `mini-vector`, or the AML workspace root and set `OPENAI_API_KEY` for the selected OpenAI-compatible service. Optional API settings include `OPENAI_BASE_URL` and both model names. Explicit constructor arguments take precedence over `.env`. The defaults are `gpt-4o-mini`, `text-embedding-3-small`, and `mini_vector.sqlite3` in the current working directory. Keep `.env` private.
 
-```bash
-.venv/bin/python -m mini_vector.aml_api --host 127.0.0.1 --port 8000
+```python
+from mini_vector import MiniVector
+
+memory = MiniVector()
+memory.add("I live in Berlin and prefer biking to work.", user_id="alice")
+found = memory.search("How does Alice commute?", filters={"user_id": "alice"})
+print(found["results"])
+memory.close()
 ```
 
-The service exposes only `GET /health`, `POST /add` and `POST /search`.
-Add/Search require `Authorization: Bearer <AML_API_TOKEN>`; Health does not.
-See [AML_API.md](AML_API.md) for the wire contract and [DEPLOYMENT.md](DEPLOYMENT.md)
-for the production layout and HTTPS configuration.
+`add(..., infer=True)` retrieves up to ten recent messages and ten similar memories, extracts self-contained facts, deduplicates exact MD5 hashes within scope, generates 1–3 retrieval questions per new fact, embeds facts and individual questions, and records ADD history. Empty extraction still saves context. `infer=False` stores non-system messages directly but also generates retrieval questions by default. At least one of `user_id`, `agent_id`, or `run_id` is required for scoped operations; searches use `filters={...}`.
 
-## Verify
+`search` retrieves each channel independently, reranks the first 30 candidates per channel with the LLM, and fuses ranks using equal-weight RRF before taking global top-k. Question hits return original memories. Invalid rerank output falls back to that channel's original order. `explain=True` adds component scores and ranks. Text updates rebuild question indexes; metadata updates retain them; deletes remove them. For the original retrieval algorithm use `MiniVector(memory_query_enabled=False, rerank_mode="none")`. Ordinary old databases need explicit `backfill_memory_queries(filters=...)` to index existing facts; opening them never triggers model calls.
 
-Offline tests inject models and use real SQLite; they make no provider calls.
+## Fact extraction prompt
 
-```bash
-.venv/bin/python -m unittest discover -s tests -v
-```
+Since 2026-10-23, `add(infer=True)` uses the user's full Memory Extractor prompt verbatim as its system message, stored in [mini_vector/prompts.py](mini_vector/prompts.py). Runtime JSON supplies new messages, recent messages, existing memories, observation date and current UTC date. Summary and recently extracted memories remain explicitly empty because the library does not produce those inputs. Source dates come from `metadata.observation_date`, message Unix-millisecond timestamps, `metadata.source_timestamps`, or the existing LoCoMo `metadata.session_date`; unknown source dates are marked unknown rather than replaced by the current date. Multiple message dates remain distinct. Numeric source timestamps are interpreted in UTC.
 
-Synthetic live verification calls the configured real model providers, starts a
-temporary localhost HTTP service and removes its temporary database afterward.
+This changes fact extraction only; question generation and per-channel reranking retain their own prompts. The existing parser consumes `memory[].text` and assigns real UUIDs; model-generated `id`, `attributed_to` and `linked_memory_ids` do not automatically become persisted fields or a relationship graph. The AML live client still appends its existing source-timestamp clarification to system messages. Existing memories are not re-extracted; running services must reload the code. New LoCoMo runs freeze and hash the extraction prompt module alongside the other sources; historical results are preserved and do not measure this prompt.
 
-```bash
-.venv/bin/python scripts/verify_aml_api.py --live
-```
+## Deliberate scope
 
-Reported deployment validation: Ubuntu 22.04 / Python 3.10, 31 offline tests
-passed; 11 synthetic live HTTP checks passed, including restart and request
-replay. Public HTTPS health and certificate renewal were also checked. These
-are deployment/integration checks, not official AML Smoke, benchmark scores or
-evidence of memory quality. Official AML Smoke and Full have not been run.
+This keeps the main mem0 vector flow and removes provider factories, async duplicates, telemetry, procedural memory, expiration policies, entity-vector linking, linked-memory relationships, hosted services, and advanced metadata operators. In particular, there is no entity extraction/index and no graph. FTS5 BM25 is a real SQLite lexical ranker, not a string-overlap substitute. Unlike a dedicated vector database, SQLite's exact cosine scan is O(number of memories in the selected scope); it is appropriate for compact local memory stores, not large corpora.
 
-## Version and limits
+Both API operations are injectable for offline tests: `llm(messages) -> JSON string` and `embedder(texts) -> list[list[float]]`. These hooks test orchestration without claiming live provider integration. The default implementation calls the configured OpenAI-compatible chat and embeddings endpoints; it never falls back to fabricated vectors or heuristic fact extraction.
 
-Use the full Git commit SHA when submitting. `BASELINE_MANIFEST.json` records
-SHA-256 hashes of the deployed baseline files. The original archive was used to
-prepare this repository; no model logic changes were introduced by packaging.
-One worker and one shared operation lock serialize Add/Search: declared active
-operation capacity is 1. Health remains independent. Vector scanning is linear
-in the selected user's memory count; there is no measured throughput guarantee.
-The service is a baseline and has not been validated at full-benchmark scale.
+## LoCoMo evaluation
 
-This release deliberately excludes experiment outputs, datasets, databases,
-credentials and the later enhanced research implementation.
+The real conversation-zero evaluation runner is in [evals/README.md](evals/README.md). It ingests all 419 utterances in `conv-26`, evaluates the 152 category 1–4 questions with top-20 retrieval, and saves actual model calls, native retrieval traces, answers, judgments, persistent memory and resumable checkpoints under `eval_outputs/`. Offline UI fixtures are separate from these benchmark runs.
 
-## Attribution and license
+The 2026-10-23 run with the full new extraction prompt and enhanced retrieval scored **135/152 (88.82%)**, with 1,759 memories and 4,920 memory-side questions; independent verification passed. All 456 channel rerank responses failed the exact-permutation contract and fell back, so the score reflects original channel orders fused by RRF. The earlier legacy run scored 126/152 (82.89%); both extraction and retrieval changed, so this is not a prompt-only ablation. See the [run report](E:/AML/mini-vector/eval_outputs/locomo_conv26_newprompt_enhanced_20261023_01/REPORT.md).
 
-Based on the non-graph memory workflow of [mem0](https://github.com/mem0ai/mem0).
-See [NOTICE](NOTICE) for changes and upstream attribution, and [LICENSE](LICENSE)
-for Apache-2.0 terms. AML contract: https://agentmemoryleaderboard.ai/api-guide.
+## AML Textual API
+
+See [AML_API.md](AML_API.md) for the optional FastAPI service, authentication and atomic idempotent ingestion. It defaults to the enhanced retrieval and uses the existing chat provider for `gpt-4o-mini` and a separate Qwen client for `text-embedding-v4`, with settings read from `E:\.env` (override with `AML_EMBEDDING_ENV_FILE`). Retrieval settings are bound to database identity: use a new database path when upgrading an old AML database. Historical artifacts remain unchanged. The earlier live HTTP verification predates these retrieval changes; current validation uses injected models and is not an official AML Smoke or a benchmark score.
