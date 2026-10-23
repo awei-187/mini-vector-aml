@@ -1,0 +1,20 @@
+Mini Vector AML baseline
+
+This compact implementation follows the non-graph open-source memory workflow
+of mem0 (https://github.com/mem0ai/mem0). The upstream project is licensed under
+Apache License 2.0. Its license is preserved in third_party/mem0/LICENSE and
+includes the original notice: Copyright [2023] [Taranjeet Singh].
+
+Attribution reference: mem0 commit 47a69e1e72dc562b6fdd49a9ef892229afc7508a.
+That reference identifies the locally inspected upstream snapshot; it does not
+claim that this repository is an unmodified checkout of that commit.
+
+Changes from the upstream workflow include a compact synchronous Python API,
+SQLite persistence, exact vector scanning, FTS5 BM25 reranking, ADD-only fact
+extraction, and an AML-specific authenticated Add/Search adapter with atomic
+batch ingestion, durable idempotency, exact user isolation, and Qwen embeddings.
+This repository does not distribute mem0's full source tree or benchmark data.
+
+Publication packaging adds documentation, examples, provenance and attribution.
+Runtime source and the bundled tests are copied unchanged from the baseline
+deployment archive identified in BASELINE_MANIFEST.json.
