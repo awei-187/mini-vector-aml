@@ -10,6 +10,10 @@ A follow-up using the same cached retrieval scored 137/152 with corrected time
 semantics and 140/152 with added source excerpts. See the
 [full follow-up results and grading limitations](RESULTS_TEMPORAL_SOURCE_20261024.md).
 
+On the edited147 dataset, the latest policy scored 103/147 with the existing GPT
+four-class judge and 111/147 with pinned Jev; see
+[edited-data evaluation and judge disagreements](RESULTS_EDITED147_DUAL_20261024.md).
+
 ## Install and configure
 
 Python 3.10+ and SQLite with FTS5 are required. From PowerShell:

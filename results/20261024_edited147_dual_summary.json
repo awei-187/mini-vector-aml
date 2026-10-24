@@ -1,0 +1,167 @@
+{
+  "evaluated_source_commit": "673e944981267893bcf7f0f860d234d9086b4e0d",
+  "dataset": "Edited LoCoMo conv-26, current147",
+  "dataset_sha256": "e7c79b10f81e26fc08ea5da246cb86cfb6c5fbe62920e7d947080434fc0dc94d",
+  "completed_at": "2026-10-24T18:03:58.944563+08:00",
+  "summary": {
+    "total": 147,
+    "judges": {
+      "gpt": {
+        "counts": {
+          "correct": 103,
+          "partial": 30,
+          "missing": 4,
+          "incorrect": 10
+        },
+        "llm_j": 0.7006802721088435
+      },
+      "jev": {
+        "counts": {
+          "correct": 111,
+          "partial": 18,
+          "missing": 5,
+          "incorrect": 13
+        },
+        "llm_j": 0.7551020408163265
+      }
+    },
+    "by_category": {
+      "1": {
+        "total": 31,
+        "gpt": {
+          "correct": 8,
+          "partial": 18,
+          "missing": 2,
+          "incorrect": 3
+        },
+        "jev": {
+          "correct": 12,
+          "missing": 2,
+          "partial": 14,
+          "incorrect": 3
+        }
+      },
+      "2": {
+        "total": 37,
+        "gpt": {
+          "correct": 29,
+          "partial": 4,
+          "incorrect": 4
+        },
+        "jev": {
+          "correct": 32,
+          "incorrect": 5
+        }
+      },
+      "3": {
+        "total": 9,
+        "gpt": {
+          "partial": 3,
+          "correct": 5,
+          "incorrect": 1
+        },
+        "jev": {
+          "partial": 1,
+          "incorrect": 2,
+          "correct": 5,
+          "missing": 1
+        }
+      },
+      "4": {
+        "total": 70,
+        "gpt": {
+          "partial": 5,
+          "correct": 61,
+          "missing": 2,
+          "incorrect": 2
+        },
+        "jev": {
+          "correct": 62,
+          "missing": 2,
+          "incorrect": 3,
+          "partial": 3
+        }
+      }
+    },
+    "confusion_matrix_gpt_to_jev": {
+      "correct": {
+        "correct": 98,
+        "partial": 1,
+        "missing": 0,
+        "incorrect": 4
+      },
+      "partial": {
+        "correct": 11,
+        "partial": 16,
+        "missing": 2,
+        "incorrect": 1
+      },
+      "missing": {
+        "correct": 0,
+        "partial": 1,
+        "missing": 3,
+        "incorrect": 0
+      },
+      "incorrect": {
+        "correct": 2,
+        "partial": 0,
+        "missing": 0,
+        "incorrect": 8
+      }
+    },
+    "agreement_count": 125,
+    "agreement_rate": 0.8503401360544217,
+    "memory_count": 1742,
+    "memory_query_count": 4813,
+    "ingestion_turns": 419
+  },
+  "verification": "passed",
+  "offline_tests": 75,
+  "gpt_embedding_usage": {
+    "benchmark": {
+      "successful_calls": 2530,
+      "failed_calls": 2,
+      "prompt_tokens": 4570330,
+      "completion_tokens": 190813,
+      "total_tokens": 4761143
+    },
+    "preflight": {
+      "successful_calls": 7,
+      "failed_calls": 0,
+      "prompt_tokens": 8826,
+      "completion_tokens": 90,
+      "total_tokens": 8916
+    }
+  },
+  "jev_usage": {
+    "benchmark": {
+      "successful_calls": 147,
+      "failed_attempts": 1,
+      "input_tokens": 102045,
+      "output_tokens": 6808,
+      "reported_cost_sum": 0.004285890000000002,
+      "response_calls_with_usage": 148,
+      "response_calls_with_cost": 148
+    },
+    "preflight": {
+      "successful_calls": 1,
+      "failed_attempts": 0,
+      "input_tokens": 633,
+      "output_tokens": 46,
+      "reported_cost_sum": 2.6586e-05,
+      "response_calls_with_usage": 1,
+      "response_calls_with_cost": 1
+    }
+  },
+  "cohen_kappa": 0.6590765338393421,
+  "mutually_correct": 98,
+  "judge_disagreement_count": 22,
+  "method": "Fresh419 ingestion; unchanged latest temporal_source policy, RRF top20, max4 source windows",
+  "metric": "LLM-J = fully-correct count /147; other classes reported separately; no numeric-code averaging",
+  "limitations": [
+    "Edited version of an already-inspected conversation, not a held-out dataset family",
+    "Both GPT and JEV have observable rubric or date mistakes; agreement is not truth",
+    "No same-corpus ablation or concurrent Mem0 baseline; historical comparisons are descriptive",
+    "Original152 generous binary scores are not directly comparable"
+  ]
+}
