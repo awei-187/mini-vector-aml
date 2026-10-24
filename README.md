@@ -6,6 +6,10 @@ Opt-in fused selection modes and a fixed-corpus LoCoMo experiment are described 
 [OPTIMIZATION.md](OPTIMIZATION.md). All three tested modes scored 130/152 on the
 first conversation; see [results and costs](RESULTS_20261024.md).
 
+A follow-up using the same cached retrieval scored 137/152 with corrected time
+semantics and 140/152 with added source excerpts. See the
+[full follow-up results and grading limitations](RESULTS_TEMPORAL_SOURCE_20261024.md).
+
 ## Install and configure
 
 Python 3.10+ and SQLite with FTS5 are required. From PowerShell:

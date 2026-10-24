@@ -1,0 +1,207 @@
+{
+  "evaluated_source_commit": "0c508cd119c18e24457fcf4b9dd49c92bf08d2d2",
+  "dataset": "LoCoMo original conversation 0 (conv-26)",
+  "questions_per_arm": 152,
+  "categories_included": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "memory_count": 1711,
+  "memory_query_count": 4766,
+  "memory_rebuilt": false,
+  "new_embeddings": false,
+  "historical_baseline": {
+    "total": 152,
+    "correct": 130,
+    "accuracy": 0.8552631578947368,
+    "category_metrics": {
+      "1": {
+        "total": 32,
+        "correct": 24,
+        "accuracy": 0.75
+      },
+      "2": {
+        "total": 37,
+        "correct": 28,
+        "accuracy": 0.7567567567567568
+      },
+      "3": {
+        "total": 13,
+        "correct": 12,
+        "accuracy": 0.9230769230769231
+      },
+      "4": {
+        "total": 70,
+        "correct": 66,
+        "accuracy": 0.9428571428571428
+      }
+    },
+    "memory_count": 1711,
+    "ingestion_turns": 419,
+    "mean_retrieval_latency_ms": 5297.386048683142
+  },
+  "arms": {
+    "temporal": {
+      "summary": {
+        "total": 152,
+        "correct": 137,
+        "accuracy": 0.9013157894736842,
+        "category_metrics": {
+          "1": {
+            "total": 32,
+            "correct": 25,
+            "accuracy": 0.78125
+          },
+          "2": {
+            "total": 37,
+            "correct": 33,
+            "accuracy": 0.8918918918918919
+          },
+          "3": {
+            "total": 13,
+            "correct": 13,
+            "accuracy": 1.0
+          },
+          "4": {
+            "total": 70,
+            "correct": 66,
+            "accuracy": 0.9428571428571428
+          }
+        }
+      },
+      "usage": {
+        "benchmark": {
+          "successful_calls": 304,
+          "failed_calls": 0,
+          "prompt_tokens": 230603,
+          "completion_tokens": 12078,
+          "total_tokens": 242681
+        }
+      },
+      "verification": "passed",
+      "mean_context_chars": 3894.6052631578946
+    },
+    "temporal_source": {
+      "summary": {
+        "total": 152,
+        "correct": 140,
+        "accuracy": 0.9210526315789473,
+        "category_metrics": {
+          "1": {
+            "total": 32,
+            "correct": 24,
+            "accuracy": 0.75
+          },
+          "2": {
+            "total": 37,
+            "correct": 35,
+            "accuracy": 0.9459459459459459
+          },
+          "3": {
+            "total": 13,
+            "correct": 13,
+            "accuracy": 1.0
+          },
+          "4": {
+            "total": 70,
+            "correct": 68,
+            "accuracy": 0.9714285714285714
+          }
+        }
+      },
+      "usage": {
+        "benchmark": {
+          "successful_calls": 304,
+          "failed_calls": 0,
+          "prompt_tokens": 411486,
+          "completion_tokens": 12204,
+          "total_tokens": 423690
+        }
+      },
+      "verification": "passed",
+      "mean_context_chars": 7908.7171052631575
+    }
+  },
+  "paired": {
+    "temporal_vs_rrf": {
+      "gains": 9,
+      "losses": 2,
+      "net": 7,
+      "changed_answer": 124
+    },
+    "temporal_source_vs_rrf": {
+      "gains": 12,
+      "losses": 2,
+      "net": 10,
+      "changed_answer": 129
+    },
+    "temporal_source_vs_temporal": {
+      "gains": 5,
+      "losses": 2,
+      "net": 3,
+      "changed_answer": 106
+    }
+  },
+  "total_usage": {
+    "successful_calls": 608,
+    "failed_calls": 0,
+    "prompt_tokens": 642089,
+    "completion_tokens": 24282,
+    "total_tokens": 666371
+  },
+  "limitations": [
+    "One already-inspected development conversation; not a held-out evaluation",
+    "Same generous gpt-4o-mini judge; no independent adjudication",
+    "Historical baseline not re-answered; generation and judge variation remains",
+    "Source arm adds context quantity as well as evidence type",
+    "Temporal policy combines corrected timestamp labels and answer instructions"
+  ],
+  "completed_at": "2026-10-24T10:10:56.056440+08:00",
+  "historical_baseline_answer_judge_usage": {
+    "successful_calls": 304,
+    "failed_calls": 0,
+    "prompt_tokens": 265586,
+    "completion_tokens": 12712,
+    "total_tokens": 278298
+  },
+  "label_boundary_review": {
+    "temporal_clear_time_improvement_indices": [
+      1,
+      9,
+      21,
+      36,
+      49,
+      73
+    ],
+    "source_additional_time_improvement_indices": [
+      80
+    ],
+    "identical_incomplete_answer_regraded_indices": [
+      60
+    ],
+    "incomplete_list_label_variation_indices": [
+      15
+    ],
+    "multi_event_date_label_variation_indices": [
+      33
+    ],
+    "historical_false_acceptance_now_rejected_indices": [
+      11
+    ],
+    "source_answer_omission_indices": [
+      56
+    ],
+    "partial_detail_acceptance_indices": [
+      137
+    ],
+    "status": "diagnostic only; published scores unchanged; no new judge calls",
+    "source_adds_missing_relative_time_indices": [
+      80
+    ],
+    "detail_already_present_in_cached_facts_indices": [
+      110
+    ]
+  }
+}
