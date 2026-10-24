@@ -7,12 +7,14 @@ import re
 import sqlite3
 import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
 from .config import setting
 from .prompts import MEMORY_EXTRACTION_PROMPT, build_extraction_input
 from .retrieval import memory_queries, rerank_channel, rerank_fused
+from .vector_scan import VectorPool, np
 
 
 def _now() -> str:
@@ -58,7 +60,18 @@ def _trace_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
 class SQLiteVectorStore:
     """Persistent vector records in SQLite, searched by exact cosine scan + SQLite FTS5 BM25."""
 
-    def __init__(self, path: str = "mini_vector.sqlite3"):
+    def __init__(self, path: str = "mini_vector.sqlite3", *, vector_backend: str = "auto",
+                 vector_cache_bytes: int = 128*1024*1024):
+        if vector_backend not in {"auto", "python", "numpy"}:
+            raise ValueError("vector_backend must be auto, python or numpy")
+        if vector_backend == "numpy" and np is None:
+            raise RuntimeError("Install mini-vector-memory[fast] to use the numpy backend")
+        if type(vector_cache_bytes) is not int or vector_cache_bytes < 0:
+            raise ValueError("vector_cache_bytes must be a non-negative integer")
+        self.vector_backend = vector_backend
+        self.vector_cache_bytes = vector_cache_bytes
+        self._vector_cache = OrderedDict()
+        self._vector_cache_stamp = None
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.lock = threading.RLock()
@@ -69,6 +82,9 @@ class SQLiteVectorStore:
                 hash TEXT NOT NULL, metadata TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS memory_hash_idx ON memories(hash);
+            CREATE INDEX IF NOT EXISTS memory_user_scope_idx ON memories(json_extract(metadata, '$.user_id'));
+            CREATE INDEX IF NOT EXISTS memory_agent_scope_idx ON memories(json_extract(metadata, '$.agent_id'));
+            CREATE INDEX IF NOT EXISTS memory_run_scope_idx ON memories(json_extract(metadata, '$.run_id'));
             CREATE TABLE IF NOT EXISTS history (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL,
                 old_memory TEXT, new_memory TEXT, event TEXT NOT NULL,
@@ -134,13 +150,26 @@ class SQLiteVectorStore:
 
     def get(self, memory_id: str) -> dict[str, Any] | None:
         with self.lock:
-            row = self.db.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+            row = self.db.execute("SELECT id,data,hash,metadata FROM memories WHERE id=?", (memory_id,)).fetchone()
         return self._row(row) if row else None
+
+    def get_many(self, memory_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Read candidate payloads once, without fetching their large vectors."""
+        ids = list(dict.fromkeys(memory_ids))
+        found = {}
+        with self.lock:
+            for start in range(0, len(ids), 900):
+                batch = ids[start:start+900]
+                rows = self.db.execute(
+                    f"SELECT id,data,hash,metadata FROM memories WHERE id IN ({','.join('?' for _ in batch)})",
+                    batch).fetchall()
+                found.update((row["id"], self._row(row)) for row in rows)
+        return found
 
     def list(self, scope: dict[str, str]) -> list[dict[str, Any]]:
         clause, args = _scope_sql(scope)
         with self.lock:
-            rows = self.db.execute(f"SELECT * FROM memories WHERE {clause} ORDER BY rowid", args).fetchall()
+            rows = self.db.execute(f"SELECT id,data,hash,metadata FROM memories WHERE {clause} ORDER BY rowid", args).fetchall()
         return [self._row(row) for row in rows]
 
     def duplicate_hashes(self, scope: dict[str, str], hashes: Iterable[str]) -> set[str]:
@@ -154,28 +183,46 @@ class SQLiteVectorStore:
         return {row[0] for row in rows}
 
     def semantic(self, vector: list[float], scope: dict[str, str], limit: int) -> list[tuple[dict[str, Any], float]]:
-        clause, args = _scope_sql(scope)
         with self.lock:
-            rows = self.db.execute(f"SELECT * FROM memories WHERE {clause}", args).fetchall()
-        scored = [(row, _cosine(vector, json.loads(row["embedding"]))) for row in rows]
-        scored.sort(key=lambda pair: pair[1], reverse=True)
-        return [(self._row(row), score) for row, score in scored[:limit]]
+            ranked = self._vector_pool(scope, questions=False).rank(vector, limit)
+            payloads = self.get_many(mid for mid, _ in ranked)
+            return [(payloads[mid], score) for mid, score in ranked if mid in payloads]
 
     def query_semantic(self, vector: list[float], scope: dict[str, str], limit: int
                        ) -> list[tuple[dict[str, Any], float]]:
         """Max question cosine per memory; deduplicate before applying the limit."""
-        clause, args = _scope_sql(scope)
         with self.lock:
-            rows = self.db.execute(f"""SELECT m.*, q.embedding AS query_embedding
-                FROM memory_queries q JOIN memories m ON m.id=q.memory_id
-                WHERE {clause} ORDER BY m.rowid, q.position""", args).fetchall()
-        best = {}
-        for row in rows:
-            score = _cosine(vector, json.loads(row["query_embedding"]))
-            if row["id"] not in best or score > best[row["id"]][1]:
-                best[row["id"]] = (row, score)
-        ranked = sorted(best.values(), key=lambda pair: pair[1], reverse=True)
-        return [(self._row(row), score) for row, score in ranked[:limit]]
+            ranked = self._vector_pool(scope, questions=True).rank(vector, limit)
+            payloads = self.get_many(mid for mid, _ in ranked)
+            return [(payloads[mid], score) for mid, score in ranked if mid in payloads]
+
+    def _vector_pool(self, scope: dict[str, str], *, questions: bool) -> VectorPool:
+        # total_changes covers this connection, data_version covers other
+        # connections. Never retain a pool built inside a transaction: rollback
+        # does not increment total_changes and must not expose uncommitted data.
+        stamp = (self.db.total_changes, self.db.execute("PRAGMA data_version").fetchone()[0])
+        if stamp != self._vector_cache_stamp:
+            self._vector_cache.clear()
+            self._vector_cache_stamp = stamp
+        key = (tuple(sorted(scope.items())), questions)
+        cacheable = not self.db.in_transaction and self.vector_cache_bytes > 0
+        if cacheable and key in self._vector_cache:
+            self._vector_cache.move_to_end(key)
+            return self._vector_cache[key]
+        clause, args = _scope_sql(scope)
+        if questions:
+            sql = f"""SELECT q.memory_id,q.embedding FROM memory_queries q
+                JOIN memories m ON m.id=q.memory_id WHERE {clause} ORDER BY m.rowid,q.position"""
+        else:
+            sql = f"SELECT id,embedding FROM memories WHERE {clause} ORDER BY rowid"
+        pool = VectorPool(self.db.execute(sql, args), backend=self.vector_backend)
+        # Count compact numeric payloads. Python ID/group bookkeeping is extra.
+        if cacheable and pool.nbytes <= self.vector_cache_bytes:
+            while self._vector_cache and (len(self._vector_cache) >= 8 or
+                    sum(p.nbytes for p in self._vector_cache.values())+pool.nbytes > self.vector_cache_bytes):
+                self._vector_cache.popitem(last=False)
+            self._vector_cache[key] = pool
+        return pool
 
     def bm25(self, query: str, scope: dict[str, str], limit: int,
              research_trace: dict[str, Any] | None = None) -> dict[str, float]:
@@ -269,6 +316,7 @@ class SQLiteVectorStore:
         return [dict(r) for r in rows]
 
     def close(self) -> None:
+        self._vector_cache.clear()
         self.db.close()
 
 
@@ -502,8 +550,9 @@ class MiniVector:
                      if self.memory_query_enabled else [])
         bm25_trace = {} if research_trace is not None else None
         lexical_scores = self.store.bm25(query, scope, candidate_limit, research_trace=bm25_trace)
-        lexical = [(item, score) for mid, score in lexical_scores.items()
-                   if (item := self.store.get(mid)) is not None]
+        lexical_payloads = self.store.get_many(lexical_scores)
+        lexical = [(lexical_payloads[mid], score) for mid, score in lexical_scores.items()
+                   if mid in lexical_payloads]
         channels = {"semantic": semantic, "bm25": lexical, "memory_query": generated}
         merged, channel_trace = {}, {}
         active = 0

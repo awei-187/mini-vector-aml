@@ -14,6 +14,13 @@ On the edited147 dataset, the latest policy scored 103/147 with the existing GPT
 four-class judge and 111/147 with pinned Jev; see
 [edited-data evaluation and judge disagreements](RESULTS_EDITED147_DUAL_20261024.md).
 
+The SQLite scan optimization branch adds bounded decoded-vector caches, optional
+float64 NumPy acceleration, scope indexes and batched payload reads. See
+[configuration, cache correctness and offline performance replay](PERFORMANCE.md).
+Both backends exactly matched all 147 saved retrieval traces and answer contexts;
+local warm-cache search measured 505 ms (Python) / 81 ms (NumPy), versus 3,011 ms
+for the frozen implementation. See [measurements and limits](RESULTS_VECTOR_SCAN_20261025.md).
+
 ## Install and configure
 
 Python 3.10+ and SQLite with FTS5 are required. From PowerShell:

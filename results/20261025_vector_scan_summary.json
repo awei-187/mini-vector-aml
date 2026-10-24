@@ -1,0 +1,89 @@
+{
+  "status": "passed",
+  "baseline_commit": "f49af330c65340c7ae76dae9ae3b5e364a042d66",
+  "tested_source_sha256": {
+    "mini_vector\\memory.py": "fb262b0867ea52a0babb4ccef75c70b353a425df5fce06d325a94f0c82917a46",
+    "mini_vector\\vector_scan.py": "b8bb2c960e17ada1f1546e6da6eda94563a59d2cfb484b8faefc908b711670ac",
+    "evals\\benchmark_vector_scan.py": "ab5f56dd2d441f1b940e4dc89b04c65e398f8436a8f68e2084970083dffa8e10"
+  },
+  "dataset_sha256": "e7c79b10f81e26fc08ea5da246cb86cfb6c5fbe62920e7d947080434fc0dc94d",
+  "database_sha256": "0247f10e5447ec192ed5d9c58a5111179d821ac840822cd1c852feea61f4c2fd",
+  "model_calls": 0,
+  "replay": {
+    "python": {
+      "matching_questions": 147,
+      "first_query_ms": 3171.257899986813,
+      "subsequent_queries": {
+        "samples": 146,
+        "median_ms": 502.07694998243824,
+        "p95_ms": 519.5709000108764
+      },
+      "numeric_cache_MiB": 76.91642761230469
+    },
+    "numpy": {
+      "matching_questions": 147,
+      "first_query_ms": 2770.6713000079617,
+      "subsequent_queries": {
+        "samples": 146,
+        "median_ms": 79.4494500150904,
+        "p95_ms": 91.08650000416674
+      },
+      "numeric_cache_MiB": 76.91642761230469
+    }
+  },
+  "timing": {
+    "baseline": {
+      "samples": 24,
+      "median_ms": 3011.226449991227,
+      "p95_ms": 3073.136399994837
+    },
+    "python": {
+      "samples": 24,
+      "median_ms": 505.3011000127299,
+      "p95_ms": 520.492399984505
+    },
+    "numpy": {
+      "samples": 24,
+      "median_ms": 81.13990000856575,
+      "p95_ms": 91.6985000076238
+    }
+  },
+  "cold_decoded_cache_ms": {
+    "python": 3142.104600003222,
+    "numpy": 2738.207300018985
+  },
+  "method": {
+    "timing_queries": 12,
+    "repeats": 2,
+    "questions": 147,
+    "scope_count": 1,
+    "fact_count": 1742,
+    "question_vector_count": 4813,
+    "dimension": 1536,
+    "timing_includes": "real local search, three channels, payload fetch, RRF, explain and trace",
+    "timing_excludes": "model API, source-window lookup, answer generation, judges",
+    "cold_means": "empty decoded vector cache; OS page cache is not cleared",
+    "precision": "float64 shortlist with guarded original-Python rescoring"
+  },
+  "environment": {
+    "python": "3.11.16",
+    "numpy": "2.4.6",
+    "sqlite": "3.53.4"
+  },
+  "limitations": [
+    "single existing development conversation",
+    "not an end-to-end model latency benchmark",
+    "no new answers or judge calls; unchanged contexts do not constitute a new LLM-J score",
+    "JSON vectors remain on disk; numeric cache uses additional RAM",
+    "ANN, float32/BLOB migration and service concurrency changes not included"
+  ],
+  "median_speedup": {
+    "python": 5.959271511412436,
+    "numpy": 37.111537599545215
+  },
+  "offline_tests": {
+    "unique_tests": 84,
+    "with_numpy": "passed",
+    "without_numpy": "passed"
+  }
+}
