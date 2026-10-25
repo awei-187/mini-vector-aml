@@ -47,7 +47,56 @@ memory.close()
 
 `add(..., infer=True)` retrieves up to ten recent messages and ten similar memories, extracts self-contained facts, deduplicates exact MD5 hashes within scope, generates 1–3 retrieval questions per new fact, embeds facts and individual questions, and records ADD history. Empty extraction still saves context. `infer=False` stores non-system messages directly but also generates retrieval questions by default. At least one of `user_id`, `agent_id`, or `run_id` is required for scoped operations; searches use `filters={...}`.
 
-`search` retrieves each channel independently, reranks the first 30 candidates per channel with the LLM, and fuses ranks using equal-weight RRF before taking global top-k. Question hits return original memories. Invalid rerank output falls back to that channel's original order. `explain=True` adds component scores and ranks. Text updates rebuild question indexes; metadata updates retain them; deletes remove them. For the original retrieval algorithm use `MiniVector(memory_query_enabled=False, rerank_mode="none")`. Ordinary old databases need explicit `backfill_memory_queries(filters=...)` to index existing facts; opening them never triggers model calls.
+`search` retrieves each channel independently and fuses ranks using equal-weight RRF before taking global top-k. The backward-compatible default `rerank_mode="llm"` asks the CHAT model to reorder the first30 candidates per channel; it is not a dedicated reranker. `none` skips reranking; `global`/`evidence` use chat-based selection after fusion. `qwen` uses a separate, instruction-aware Qwen reranker after fusion, with its own model, endpoint and credentials. Question hits return original memories. Invalid rerank output falls back to the original order with an explicit trace status. `explain=True` adds component scores and ranks. Text updates rebuild question indexes; metadata updates retain them; deletes remove them. For the original retrieval algorithm use `MiniVector(memory_query_enabled=False, rerank_mode="none")`. Ordinary old databases need explicit `backfill_memory_queries(filters=...)` to index existing facts; opening them never triggers model calls.
+
+### Independent Qwen reranker
+
+```python
+from mini_vector import MiniVector
+from mini_vector.reranker import SUPPORT_INSTRUCTION
+
+memory = MiniVector(
+    "memory.sqlite3",
+    chat_model="gpt-4o-mini",          # Extraction/question generation only.
+    memory_query_enabled=True,
+    rerank_mode="qwen",
+    rerank_limit=60,                    # Fused RRF prefix, one scoring request.
+    reranker_env_file="E:/.env",        # Existing external Qwen config/credentials.
+    reranker_model="qwen3-rerank",       # Independent from chat_model.
+    reranker_instruction=SUPPORT_INSTRUCTION,
+    reranker_timeout=120.0,
+)
+try:
+    trace = {}
+    result = memory.search("Where does Alice live?", filters={"user_id": "alice"},
+                           top_k=20, explain=True, research_trace=trace)
+finally:
+    memory.close()
+```
+
+The credential file supplies `QWEN_RERANK_ENDPOINT`, `QWEN_RERANK_MODEL`,
+`QWEN_RERANK_API_KEY_ENV` (default `DASHSCOPE_API_KEY`) and that named key.
+`QWEN_RERANK_INSTRUCTION` is optional; the standard retrieval instruction is
+the fallback. Explicit constructor values override configuration; process
+environment values override the external file. Nothing is copied into
+`os.environ`. Without an explicit file or `MINI_VECTOR_RERANKER_ENV_FILE`,
+configuration uses the normal project/workspace settings. Opening with `none`
+does not load or call the reranker.
+
+Qwen receives only query/fact texts and `parameters.instruct`. Score every
+candidate in the prefix, sort descending with stable ties, preserve the tail,
+then take top-k. `reranker_score` is a separate provider score on scored results;
+`score` retains the original RRF value and may no longer descend with output
+rank. Neither score is a calibrated probability. Research trace schema4 records
+the score mapping, ordering, model/instruction identity and any fallback.
+Library calls do not redirect or retry implicitly. The optional AML server also
+accepts `--rerank-mode qwen`, `--reranker-model`, `--reranker-instruction`,
+`--reranker-env-file` and `--reranker-timeout`; retrieval identity is persisted
+with its existing database configuration guard.
+
+The best previously tested answer policy used `rerank_mode="none"`. Dedicated
+Qwen effectiveness is a separate experiment, described in
+[the predeclared protocol](QWEN_RERANK_EXPERIMENT_20261025.md).
 
 ## Fact extraction prompt
 

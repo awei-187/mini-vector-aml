@@ -66,3 +66,33 @@ Start-Process -FilePath 'powershell.exe' -WindowStyle Normal -ArgumentList @('-N
 为复用既有回答口径，共享提示把 `session_date` 标记为 `event_time`；这个字段实际是对话日期，并不一定是事件发生日期。抽取事实里的时间文本也会进入上下文。此语义问题保留并记录在 metadata，避免把本次改变提示的结果混进历史对比。
 
 `source_dialogue_ids` 记录产生新增记忆时输入的那一条话语；LLM 同时看过最近消息和相似记忆，这些 ID 不是经过独立验证的完整事实证据集合。`gold_origin_hit` 只表示返回记忆的摄取来源 ID 与题目 gold evidence 的交集，不能当作完整证据召回率。
+# Dedicated Qwen reranker comparison (2026-10-25)
+
+`run_qwen_ablation.py` prepares147 frozen RRF60 pools from the independently
+verified edited147 run. It compares none/default-instruction/support-instruction,
+top20, identical temporal/source answer flow, fresh answers and both four-class
+judges. No ingestion or embeddings. Exact instructions and input/source hashes
+are frozen before calls. Details: [predeclared protocol](../QWEN_RERANK_EXPERIMENT_20261025.md).
+The default invocation is offline preparation; real calls need the explicitly
+authorized `--run-models` switch. Credentials are read from the existing files,
+never copied into artifacts. A failed Qwen ranking stops the benchmark rather
+than being silently counted as a successful arm.
+
+From the mini-vector folder, prepare without API calls:
+
+```powershell
+& 'D:\conda\envs\agent_aml\python.exe' evals/run_qwen_ablation.py --run-dir eval_outputs/qwen_instruct_147_20261025_01
+```
+
+After authorization, the PowerShell wrapper saves logs, exit status and runs the
+independent verifier after successful completion:
+
+```powershell
+& .\evals\run_qwen_ablation.ps1 -RunDir 'E:\AML\mini-vector\eval_outputs\qwen_instruct_147_20261025_01' -RunModels
+```
+
+Run verification again without API calls:
+
+```powershell
+& 'D:\conda\envs\agent_aml\python.exe' evals/verify_qwen_ablation.py eval_outputs/qwen_instruct_147_20261025_01
+```

@@ -24,6 +24,7 @@ from .aml_config import EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, embedding_config,
 from .aml_store import AMLStore
 from .config import setting
 from .memory import MiniVector
+from .reranker import QwenReranker, qwen_reranker_config
 
 CHAT_MODEL = "gpt-4o-mini"
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "runtime" / "aml" / "memory.sqlite3"
@@ -104,9 +105,19 @@ def _error_status(exc: Exception) -> tuple[int, str]:
 
 class AMLBackend:
     def __init__(self, path: str, *, llm=None, embedder=None, memory_query_enabled=True,
-                 rerank_mode="llm", queries_per_memory=3, rerank_limit=30):
+                 rerank_mode="llm", queries_per_memory=3, rerank_limit=30,
+                 reranker_model=None, reranker_instruction=None, reranker_endpoint=None,
+                 reranker_api_key=None, reranker_env_file=None, reranker_timeout=120.0,
+                 reranker=None):
         base_url = setting("OPENAI_BASE_URL")
         embedding = embedding_config() if embedder is None else None
+        if rerank_mode == "qwen" and reranker is None:
+            reranker = QwenReranker(qwen_reranker_config(model=reranker_model,
+                instruction=reranker_instruction, endpoint=reranker_endpoint, api_key=reranker_api_key,
+                env_file=reranker_env_file, timeout=reranker_timeout))
+        reranker_identity = ({"reranker": reranker.config.public()} if rerank_mode == "qwen"
+                             and hasattr(reranker, "config") else
+                             ({"reranker": "injected"} if rerank_mode == "qwen" else {}))
         self.store = AMLStore(path, {
             "schema": 1, "chat_model": CHAT_MODEL, "embedding_model": EMBEDDING_MODEL,
             "provider_hash": hashlib.sha256((base_url or "https://api.openai.com/v1").encode()).hexdigest(),
@@ -116,6 +127,7 @@ class AMLBackend:
             "retrieval_version": 2, "memory_query_enabled": memory_query_enabled,
             "queries_per_memory": queries_per_memory, "rerank_mode": rerank_mode,
             "rerank_limit": rerank_limit, "fusion": "rrf_60",
+            **reranker_identity,
         })
         self.operation_lock = threading.RLock()
         self.client = None
@@ -158,7 +170,7 @@ class AMLBackend:
                                      chat_model=CHAT_MODEL, embedding_model=EMBEDDING_MODEL,
                                      memory_query_enabled=memory_query_enabled,
                                      queries_per_memory=queries_per_memory,
-                                     rerank_mode=rerank_mode, rerank_limit=rerank_limit)
+                                     rerank_mode=rerank_mode, rerank_limit=rerank_limit, reranker=reranker)
         except BaseException:
             self.close()
             raise
@@ -205,7 +217,9 @@ class AMLBackend:
 def create_app(*, db_path: str | Path | None = None, api_token: str | None = None,
                llm=None, embedder=None, memory_query_enabled: bool = True,
                rerank_mode: str = "llm", queries_per_memory: int = 3,
-               rerank_limit: int = 30) -> FastAPI:
+               rerank_limit: int = 30, reranker_model=None, reranker_instruction=None,
+               reranker_endpoint=None, reranker_api_key=None, reranker_env_file=None,
+               reranker_timeout=120.0, reranker=None) -> FastAPI:
     token = api_token if api_token is not None else os.getenv("AML_API_TOKEN") or setting("AML_API_TOKEN")
     if not token or not token.strip():
         raise ValueError("AML_API_TOKEN is required")
@@ -216,7 +230,10 @@ def create_app(*, db_path: str | Path | None = None, api_token: str | None = Non
         try:
             app.state.backend = AMLBackend(path, llm=llm, embedder=embedder,
                 memory_query_enabled=memory_query_enabled, rerank_mode=rerank_mode,
-                queries_per_memory=queries_per_memory, rerank_limit=rerank_limit)
+                queries_per_memory=queries_per_memory, rerank_limit=rerank_limit,
+                reranker_model=reranker_model, reranker_instruction=reranker_instruction,
+                reranker_endpoint=reranker_endpoint, reranker_api_key=reranker_api_key,
+                reranker_env_file=reranker_env_file, reranker_timeout=reranker_timeout, reranker=reranker)
         except Exception:
             # Prevent provider/SQLite exceptions with embedded secrets or paths from reaching server logs.
             raise RuntimeError("AML startup failed: check credentials, database identity and single-process lease") from None
@@ -283,9 +300,13 @@ def main():
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--db-path", type=Path)
     parser.add_argument("--disable-memory-queries", action="store_true")
-    parser.add_argument("--rerank-mode", choices=("none", "llm"), default="llm")
+    parser.add_argument("--rerank-mode", choices=("none", "llm", "global", "evidence", "qwen"), default="llm")
     parser.add_argument("--queries-per-memory", type=int, default=3)
     parser.add_argument("--rerank-limit", type=int, default=30)
+    parser.add_argument("--reranker-model")
+    parser.add_argument("--reranker-instruction")
+    parser.add_argument("--reranker-env-file")
+    parser.add_argument("--reranker-timeout", type=float, default=120.0)
     args = parser.parse_args()
     import uvicorn
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
@@ -294,7 +315,9 @@ def main():
     try:
         app = create_app(db_path=args.db_path, memory_query_enabled=not args.disable_memory_queries,
                          rerank_mode=args.rerank_mode, queries_per_memory=args.queries_per_memory,
-                         rerank_limit=args.rerank_limit)
+                         rerank_limit=args.rerank_limit, reranker_model=args.reranker_model,
+                         reranker_instruction=args.reranker_instruction,
+                         reranker_env_file=args.reranker_env_file, reranker_timeout=args.reranker_timeout)
     except ValueError:
         parser.exit(2, "AML_API_TOKEN must be configured before starting the service.\n")
     uvicorn.run(app, host=args.host, port=args.port, workers=1, access_log=False)

@@ -14,6 +14,7 @@ from typing import Any, Callable, Iterable
 from .config import setting
 from .prompts import MEMORY_EXTRACTION_PROMPT, build_extraction_input
 from .retrieval import memory_queries, rerank_channel, rerank_fused
+from .reranker import QwenReranker, qwen_reranker_config, rerank_qwen
 from .vector_scan import VectorPool, np
 
 
@@ -329,19 +330,28 @@ class MiniVector:
                  embedder: Callable[[list[str]], list[list[float]]] | None = None,
                  store: SQLiteVectorStore | None = None,
                  memory_query_enabled: bool = True, queries_per_memory: int = 3,
-                 rerank_mode: str = "llm", rerank_limit: int = 30):
+                 rerank_mode: str = "llm", rerank_limit: int = 30,
+                 reranker_model: str | None = None, reranker_instruction: str | None = None,
+                 reranker_endpoint: str | None = None, reranker_api_key: str | None = None,
+                 reranker_env_file: str | None = None, reranker_timeout: float = 120.0,
+                 reranker: Callable | None = None):
         if type(memory_query_enabled) is not bool:
             raise ValueError("memory_query_enabled must be boolean")
         if type(queries_per_memory) is not int or queries_per_memory < 1:
             raise ValueError("queries_per_memory must be a positive integer")
-        if rerank_mode not in {"none", "llm", "global", "evidence"}:
-            raise ValueError("rerank_mode must be none, llm, global or evidence")
+        if rerank_mode not in {"none", "llm", "global", "evidence", "qwen"}:
+            raise ValueError("rerank_mode must be none, llm, global, evidence or qwen")
         if type(rerank_limit) is not int or rerank_limit < 1:
             raise ValueError("rerank_limit must be a positive integer")
         self.memory_query_enabled = memory_query_enabled
         self.queries_per_memory = queries_per_memory
         self.rerank_mode = rerank_mode
         self.rerank_limit = rerank_limit
+        self.reranker = reranker
+        if rerank_mode == "qwen" and reranker is None:
+            self.reranker = QwenReranker(qwen_reranker_config(
+                model=reranker_model, instruction=reranker_instruction, endpoint=reranker_endpoint,
+                api_key=reranker_api_key, env_file=reranker_env_file, timeout=reranker_timeout))
         self.store = store or SQLiteVectorStore(db_path)
         self.llm, self.embedder = llm, embedder
         self.chat_model = chat_model or setting("OPENAI_CHAT_MODEL", "gpt-4o-mini")
@@ -587,6 +597,14 @@ class MiniVector:
                 self.rerank_limit, top_k, diverse=self.rerank_mode == "evidence")
             by_id = {entry["item"]["id"]: entry for entry in ordered}
             ordered = [by_id[item["id"]] for item in selected]
+        qwen_trace = None
+        if self.rerank_mode == "qwen":
+            selected, qwen_trace = rerank_qwen(
+                self.reranker, query, [entry["item"] for entry in ordered], self.rerank_limit)
+            by_id = {entry["item"]["id"]: entry for entry in ordered}
+            ordered = [by_id[item["id"]] for item in selected]
+        qwen_scores = ({row["memory_id"]: row["score"] for row in qwen_trace["scores"]}
+                       if qwen_trace is not None else {})
         semantic_scores = {item["id"]: score for item, score in semantic}
         query_scores = {item["id"]: score for item, score in generated}
         results = []
@@ -594,6 +612,8 @@ class MiniVector:
             item = entry["item"]
             score = entry["rrf"] / (active / 61)
             result = {**item, "score": min(1.0, score)}
+            if item["id"] in qwen_scores:
+                result["reranker_score"] = qwen_scores[item["id"]]
             if explain or research_trace is not None:
                 result["score_details"] = {
                     "semantic_score": semantic_scores.get(item["id"], 0.0),
@@ -609,7 +629,7 @@ class MiniVector:
                                              lexical_details=bm25_trace)
             research_trace.clear()
             research_trace.update({
-                "schema_version": 3 if global_trace is not None else 2,
+                "schema_version": 4 if qwen_trace is not None else (3 if global_trace is not None else 2),
                 "engine": "mini-vector", "candidate_limit": candidate_limit,
                 "top_k": top_k, "threshold": threshold,
                 "memory_query_enabled": self.memory_query_enabled,
@@ -627,6 +647,11 @@ class MiniVector:
                 research_trace["global_rerank"] = global_trace
                 research_trace["stages"]["selected_order"] = [entry["item"]["id"] for entry in ordered]
                 research_trace["score_semantics"]["final"] += "; RRF score retained after global selection (not a rank probability)"
+            if qwen_trace is not None:
+                research_trace["qwen_rerank"] = qwen_trace
+                research_trace["stages"]["selected_order"] = [entry["item"]["id"] for entry in ordered]
+                research_trace["score_semantics"]["final"] += "; RRF score retained after Qwen ordering (not monotonic in output rank)"
+                research_trace["score_semantics"]["reranker_score"] = "separate provider relevance score for scored prefix only; not a calibrated probability"
             if not explain:
                 for item in results:
                     item.pop("score_details", None)
