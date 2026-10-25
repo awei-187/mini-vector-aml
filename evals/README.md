@@ -96,3 +96,29 @@ Run verification again without API calls:
 ```powershell
 & 'D:\conda\envs\agent_aml\python.exe' evals/verify_qwen_ablation.py eval_outputs/qwen_instruct_147_20261025_01
 ```
+## Original152 Qwen comparison (2026-10-25)
+
+`run_qwen_original152.py` freezes the original verified1,711-fact corpus and
+same60 candidates per question, then compares none/Qwen default/Qwen support
+with fresh answers and the ORIGINAL historical answer/binary-judge prompts.
+This isolates reranking relative to the earlier original152 experiment; it
+does not use the newer temporal/source answer policy, four-class judges or JEV.
+See the [predeclared controls](../QWEN_ORIGINAL152_PROTOCOL_20261025.md).
+
+Offline preparation from the mini-vector folder:
+
+```powershell
+& 'D:\conda\envs\agent_aml\python.exe' evals/run_qwen_original152.py --run-dir eval_outputs/qwen_original152_20261025_01
+```
+
+After explicit paid-call authorization, run with logs and automatic verification:
+
+```powershell
+& .\evals\run_qwen_original152.ps1 -RunDir 'E:\AML\mini-vector\eval_outputs\qwen_original152_20261025_01' -RunModels
+```
+
+Independent offline verification:
+
+```powershell
+& 'D:\conda\envs\agent_aml\python.exe' evals/verify_qwen_original152.py eval_outputs/qwen_original152_20261025_01
+```
