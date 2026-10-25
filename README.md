@@ -96,10 +96,17 @@ with its existing database configuration guard.
 
 The current recommendation remains explicit `rerank_mode="none"`. The completed
 147-question paired experiment found GPT/Jev correct counts 101/112 (none),
-102/115 (Qwen default instruction), and97/116 (Qwen support instruction).
+102/115 (Qwen default instruction), and 97/116 (Qwen support instruction).
 Small judge-dependent changes do not establish a stable gain. See the
 [results](RESULTS_QWEN_INSTRUCT_20261025.md) and
 [predeclared protocol](QWEN_RERANK_EXPERIMENT_20261025.md).
+
+A separate original152 historical-control experiment retained the OLD answer
+prompt and generous binary GPT judge: fresh none131/152, Qwen default134/152,
+Qwen support136/152 (paired net+3/+5). It used the same frozen RRF60 pool and
+top20, without the newer temporal/source policy or Jev. These scores are distinct
+from the strict147 results; old global/evidence were not rerun in the same batch.
+See [original152 results](RESULTS_QWEN_ORIGINAL152_20261025.md).
 
 ## Fact extraction prompt
 

@@ -1,0 +1,228 @@
+{
+  "date": "2026-10-25",
+  "tested_evaluation_commit": "c668951",
+  "reranker_implementation_commit": "1329b5d",
+  "scope": {
+    "questions": 152,
+    "original_conversation": "conv-26",
+    "facts": 1711,
+    "memory_side_questions": 4766,
+    "candidates_per_question": 60,
+    "top_k": 20,
+    "arms": [
+      "none",
+      "qwen_default",
+      "qwen_support"
+    ],
+    "answer_policy": "historical_original152_event_time",
+    "judge": "GPT generous binary CORRECT/WRONG",
+    "fresh_answers": true,
+    "new_ingestion": false,
+    "new_embeddings": false,
+    "source_windows": false,
+    "jev": false
+  },
+  "arms": {
+    "none": {
+      "total": 152,
+      "correct": 131,
+      "wrong": 21,
+      "accuracy": 0.8618421052631579,
+      "by_category": {
+        "1": {
+          "total": 32,
+          "correct": 24
+        },
+        "2": {
+          "total": 37,
+          "correct": 28
+        },
+        "3": {
+          "total": 13,
+          "correct": 12
+        },
+        "4": {
+          "total": 70,
+          "correct": 67
+        }
+      }
+    },
+    "qwen_default": {
+      "total": 152,
+      "correct": 134,
+      "wrong": 18,
+      "accuracy": 0.881578947368421,
+      "by_category": {
+        "1": {
+          "total": 32,
+          "correct": 26
+        },
+        "2": {
+          "total": 37,
+          "correct": 28
+        },
+        "3": {
+          "total": 13,
+          "correct": 13
+        },
+        "4": {
+          "total": 70,
+          "correct": 67
+        }
+      }
+    },
+    "qwen_support": {
+      "total": 152,
+      "correct": 136,
+      "wrong": 16,
+      "accuracy": 0.8947368421052632,
+      "by_category": {
+        "1": {
+          "total": 32,
+          "correct": 27
+        },
+        "2": {
+          "total": 37,
+          "correct": 30
+        },
+        "3": {
+          "total": 13,
+          "correct": 13
+        },
+        "4": {
+          "total": 70,
+          "correct": 66
+        }
+      }
+    }
+  },
+  "paired": {
+    "none_to_qwen_default": {
+      "wins": 8,
+      "losses": 5,
+      "net": 3,
+      "delta_percentage_points": 1.9736842105263157,
+      "same_top20_set": 0,
+      "exploratory_exact_two_sided_mcnemar_p": 0.5810546875
+    },
+    "none_to_qwen_support": {
+      "wins": 8,
+      "losses": 3,
+      "net": 5,
+      "delta_percentage_points": 3.289473684210526,
+      "same_top20_set": 0,
+      "exploratory_exact_two_sided_mcnemar_p": 0.2265625
+    },
+    "qwen_default_to_qwen_support": {
+      "wins": 6,
+      "losses": 4,
+      "net": 2,
+      "delta_percentage_points": 1.3157894736842104,
+      "same_top20_set": 3,
+      "exploratory_exact_two_sided_mcnemar_p": 0.75390625
+    }
+  },
+  "usage": {
+    "gpt": {
+      "benchmark": {
+        "successful_calls": 827,
+        "failed_calls": 0,
+        "prompt_tokens": 794133,
+        "completion_tokens": 36808,
+        "total_tokens": 830941
+      },
+      "preflight": {
+        "successful_calls": 2,
+        "failed_calls": 0,
+        "prompt_tokens": 760,
+        "completion_tokens": 25,
+        "total_tokens": 785
+      }
+    },
+    "qwen": {
+      "preflight": {
+        "attempts": 2,
+        "completed": 2,
+        "failed": 0,
+        "total_tokens": 366
+      },
+      "benchmark": {
+        "attempts": 304,
+        "completed": 304,
+        "failed": 0,
+        "total_tokens": 2177916
+      }
+    }
+  },
+  "qwen_requests": {
+    "qwen_default": {
+      "requests": 152,
+      "median_ms": 547.1338499919511,
+      "p95_ms": 887.5407000305131,
+      "returned_tokens": 468798
+    },
+    "qwen_support": {
+      "requests": 152,
+      "median_ms": 575.8055500045884,
+      "p95_ms": 915.3845999971963,
+      "returned_tokens": 1709118
+    }
+  },
+  "validation": {
+    "status": "passed",
+    "verified_at": "2026-10-25T15:49:51.067317+08:00",
+    "questions": 152,
+    "arms": 3,
+    "same_pool_verified": 456,
+    "qwen_scored_order_verified": 304,
+    "historical_answer_and_judge_requests_verified": 912,
+    "baseline_contexts_exact": 152,
+    "frozen_source_files": 17,
+    "no_ingestion_embedding_or_jev": true
+  },
+  "source_sha256": {
+    "mini_vector\\__init__.py": "621742ca39af7edeb796f17586dca83135c5e1de49a196a3b2fb52caabfb7dc1",
+    "mini_vector\\aml_api.py": "e6ee0aa40f13ac5fb3fe44fef07e308bfa8a95694df487c85e13af45edbf63f8",
+    "mini_vector\\aml_config.py": "7de1b8cbae9f0ad0ba1f598ea12f604cd24ebc0816b5e19c4315cb41924822b0",
+    "mini_vector\\aml_store.py": "238de580d32a26174e67d5cd9a9694d0fbb170a8aa5c7d13ba7d00098e71b48c",
+    "mini_vector\\answer_context.py": "ee6db28644553437d8eea7025ca53237895f4d408ec5427460e40db92b05f794",
+    "mini_vector\\config.py": "72c0ac19d09703841823e61904e05c92d2c82e1bbb2d440e674727a152872afb",
+    "mini_vector\\memory.py": "8934309914d3c744c3b15bea03591db716140c41a7494b5223179e60292eef61",
+    "mini_vector\\prompts.py": "5d8a3b5dc31ec842e12e0f4737402360a8fcaace876a7b1ed2c4bde9f1785e17",
+    "mini_vector\\reranker.py": "13ef03dc31ce0265fea813cedf99ca9b97777dd3adc951a03ee700222ec4c5c3",
+    "mini_vector\\retrieval.py": "8135fe43236eba6c75d80b536913997c87a589afed0381fbfa2644bab3a1864a",
+    "mini_vector\\source_context.py": "6c6b84f0e1eaaf87471c4f392e6e3763bb070bb9dbb4a121889cf7903cead64a",
+    "mini_vector\\vector_scan.py": "b8bb2c960e17ada1f1546e6da6eda94563a59d2cfb484b8faefc908b711670ac",
+    "evals\\run_qwen_original152.py": "ae984cac8682ffa3a70c6f7628968a0ead5025ae394496dfed0cbee83bd2defa",
+    "evals\\verify_qwen_original152.py": "58f454c530eabceb26aa1229a104bef94a5a8ba365139d51d181366f93ca7694",
+    "evals\\run_qwen_ablation.py": "0461f41b08cccfe9d5c12b278775e72c9fb9f0677bd45f0a65aa8fa0378246e8",
+    "evals\\run_locomo.py": "135b8c64b8eaff4c87368d817a3c10284b71e86b68f5751b86a876398972be34",
+    "external/mem0_locomo_reference.py": "570cd06af8be7750e3629fce249ccd78cb1170efe997a18b036007a6965306ac"
+  },
+  "frozen_input_sha256": {
+    "frozen_inputs.json": "5bbb28564f83dd17e544272b69fbbb2694d46b0345a160b9792e027d48437d1b"
+  },
+  "offline_tests": {
+    "passed": 95,
+    "unique_tests": 95
+  },
+  "mock_only_full_pipeline": {
+    "rows": 456,
+    "passed": true,
+    "real_model_calls": 0
+  },
+  "historical_baseline_replay": {
+    "exact_contexts": 152,
+    "exact_answer_texts": 96,
+    "historical_none_correct": 130,
+    "fresh_none_correct": 131,
+    "historical_global_correct": 130,
+    "historical_evidence_correct": 130,
+    "global_and_evidence_not_rerun": true
+  },
+  "new_distinct_request_counts": {
+    "answer": 456,
+    "judge": 371
+  },
+  "conclusion": "On original152 historical answering and generous binary grading, Qwen default/support gain3/5 over fresh none; no strict four-class or five-way simultaneous superiority claim."
+}
