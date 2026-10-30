@@ -1,4 +1,4 @@
-# AML Textual API: frozen baseline
+# AML Textual API: enhanced-v2
 
 ## Contract
 
@@ -30,14 +30,18 @@ Failed ingestion rolls back atomically and can be retried.
 {"query":"What is my project code?","user_id":"alice","top_k":100,"options":["LANTERN-471","Other"]}
 ```
 
-The baseline searches the original query, ignores options and never generates
-an answer. User scope is exact (including surrounding whitespace); sessions
-are provenance only, so search can retrieve across sessions for the same user.
-The response is `{"data":[...]}` with at most top_k records, each containing
-`id`, `content`, `score` and `created_at`. Empty success is `{"data":[]}`.
+Search uses the original query plus up to three model-written subqueries,
+ignores options and never generates an answer. User scope is exact (including
+surrounding whitespace); sessions are provenance only, so search can retrieve
+across sessions for the same user. The response is `{"data":[...]}` with at most
+top_k records, each containing `id`, `content`, `score` and `created_at`, in
+final rank order. Empty success is `{"data":[]}`.
 
-Retrieval keeps cosine threshold 0.1 and baseline semantic + FTS5 BM25 ordering.
-Scores are retrieval scores, not confidence estimates or benchmark scores.
+Routes: fact-vector cosine (threshold 0.1), FTS5 BM25 and memory-side question
+vectors for the original query; fact-vector cosine and BM25 for each subquery.
+Fusion is equal-weight RRF (k=60); qwen3-rerank orders the first 60 fused
+memories. `score` is the normalized RRF score and need not decrease with rank
+after reranking. Scores are retrieval scores, not confidence estimates.
 
 ## Errors and execution
 
@@ -46,12 +50,17 @@ Scores are retrieval scores, not confidence estimates or benchmark scores.
 Failures are not converted to successful empty search results. Responses avoid
 provider exception bodies and credential values. Startup failures are sanitized.
 
-All Add/Search operations use one lock; Health does not wait on that lock.
-Use one Uvicorn worker. A database lease rejects a second service process using
-the same database. A persisted identity rejects incompatible provider/model
-configuration. Chat and embedding clients use separate keys/endpoints, 90-second
-SDK timeouts and zero SDK retries. Total request time may exceed 90 seconds
-because a request can make multiple calls or wait for the operation lock.
+Use one Uvicorn process; it serves up to 64 requests at once in worker threads.
+Adds for different users run in parallel; Adds for the same user run one at a
+time in arrival order. Searches do not queue behind Adds. Provider calls run
+outside the SQLite transaction; only the final writes are serialized. Health
+never waits on provider calls. A database lease rejects a second service process
+using the same database. A persisted identity rejects incompatible provider,
+model or retrieval configuration. Chat and embedding clients use separate
+keys/endpoints, 90-second SDK timeouts and two SDK retries for transient errors;
+the reranker retries 408/429/5xx and network errors twice. Total request time can
+exceed 90 seconds: an Add makes several sequential calls and may wait for the
+same user's previous Add. Throughput is bounded by provider rate limits.
 
 ## Configuration
 
@@ -68,8 +77,14 @@ for recognized DashScope hosts; the path is mapped to /compatible-mode/v1.
 Embedding requests use 1024 dimensions, batches of at most 10 and response-index
 validation. Missing or unsupported settings fail rather than fall back to chat.
 
+Reranking reads `QWEN_RERANK_ENDPOINT` (an HTTPS DashScope text-rerank URL) and
+the key named by `QWEN_RERANK_API_KEY_ENV` from the file in
+`MINI_VECTOR_RERANKER_ENV_FILE` (or `--reranker-env-file`); the model is fixed
+to qwen3-rerank with the built-in support instruction.
+
 `AML_API_TOKEN` is required; process env wins over .env. Keep it stable across
 restarts. DB path precedence is --db-path, AML_DB_PATH env, .env, then
-runtime/aml/memory.sqlite3. Use a new database for incompatible configuration.
+runtime/aml/f3-qwen-support-no-temporal.sqlite3. Use a new database for an
+incompatible configuration; the baseline-v1 database is rejected.
 
 Official contract: https://agentmemoryleaderboard.ai/api-guide.

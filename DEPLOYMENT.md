@@ -5,7 +5,10 @@ Validated layout: Ubuntu 22.04, Python 3.10, single process, Nginx HTTPS.
 - Source: /opt/mini-vector/app; virtualenv: /opt/mini-vector/venv.
 - Private app settings: /opt/mini-vector/app/.env.
 - Private embedding settings: /etc/mini-vector/qwen.env.
-- Persistent database: /var/lib/mini-vector/memory.sqlite3.
+- Persistent database: /var/lib/mini-vector/enhanced-v2.sqlite3 (new; the
+  baseline database memory.sqlite3 has a different identity and is rejected).
+- The same private qwen.env also holds QWEN_RERANK_ENDPOINT and
+  QWEN_RERANK_API_KEY_ENV for qwen3-rerank (see qwen.env.example).
 - Run as the dedicated mini-vector user, with source read-only and write access
   to /var/lib/mini-vector. Configs can be root:mini-vector mode 640, their private
   parent directory mode 750, and data directory mini-vector mode 700.
@@ -27,9 +30,10 @@ Group=mini-vector
 WorkingDirectory=/opt/mini-vector/app
 EnvironmentFile=/opt/mini-vector/app/.env
 Environment=AML_EMBEDDING_ENV_FILE=/etc/mini-vector/qwen.env
+Environment=MINI_VECTOR_RERANKER_ENV_FILE=/etc/mini-vector/qwen.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/mini-vector/venv/bin/python -m mini_vector.aml_api --host 127.0.0.1 --port 8000 --db-path /var/lib/mini-vector/memory.sqlite3
+ExecStart=/opt/mini-vector/venv/bin/python -m mini_vector.aml_api --host 127.0.0.1 --port 8000 --db-path /var/lib/mini-vector/enhanced-v2.sqlite3
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=120
@@ -74,9 +78,12 @@ and public HTTP work; test HTTPS /health and certbot renew --dry-run and verify
 the renewal timer. Keep TCP 80 reachable for HTTP-01 renewal. See the current
 Certbot instructions: https://certbot.eff.org/instructions?ws=nginx&os=snap.
 
-This is capacity-1 synchronous service. Nginx's 600s timeout is an inactivity
-timeout, not a measured request-duration guarantee. Declare this limitation
-to the evaluation platform. There is no distributed queue or horizontal scale.
+The service is synchronous and concurrent within one process: Adds for different
+users and all Searches overlap, Adds for one user are serialized. Throughput is
+bounded by provider rate limits and the host's CPU for vector scans; a synthetic
+live test reached 21.5 Adds/minute at 16-way concurrency with ~30 s per Add.
+Nginx's 600s timeout is an inactivity timeout, not a request-duration guarantee.
+There is no distributed queue or horizontal scale.
 
 AML requires a public repository and fixed commit for the open-source division,
 plus the live API. Submit the service token only through the platform's private

@@ -13,6 +13,8 @@ from .config import setting
 EMBEDDING_MODEL = "text-embedding-v4"
 EMBEDDING_DIMENSIONS = 1024
 EMBEDDING_BATCH_SIZE = 10
+EMBEDDING_PARALLEL_BATCHES = 8
+PROVIDER_RETRIES = 2
 
 
 def _read_env(path: Path) -> dict[str, str]:
@@ -78,20 +80,33 @@ def embedding_config(env_file: str | Path | None = None) -> EmbeddingConfig:
 def create_embedding_client(config: EmbeddingConfig | None = None):
     from openai import OpenAI
     config = config or embedding_config()
-    return OpenAI(api_key=config.api_key, base_url=config.base_url, timeout=90.0, max_retries=0)
+    # Bounded SDK retries absorb transient 429/5xx responses under concurrent load.
+    return OpenAI(api_key=config.api_key, base_url=config.base_url, timeout=90.0, max_retries=PROVIDER_RETRIES)
+
+
+def _embedding_batch(client, batch: list[str]) -> list[list[float]]:
+    response = client.embeddings.create(model=EMBEDDING_MODEL, input=batch,
+                                        dimensions=EMBEDDING_DIMENSIONS, encoding_format="float")
+    rows = sorted(response.data, key=lambda item: item.index)
+    if [item.index for item in rows] != list(range(len(batch))):
+        raise ValueError("Embedding provider returned invalid indices")
+    if any(len(item.embedding) != EMBEDDING_DIMENSIONS for item in rows):
+        raise ValueError("Embedding provider returned an unexpected dimension")
+    return [item.embedding for item in rows]
 
 
 def embedding_vectors(client, texts: list[str]) -> list[list[float]]:
-    """Honor DashScope's ten-row limit and restore each response's input order."""
-    vectors = []
-    for offset in range(0, len(texts), EMBEDDING_BATCH_SIZE):
-        batch = texts[offset:offset + EMBEDDING_BATCH_SIZE]
-        response = client.embeddings.create(model=EMBEDDING_MODEL, input=batch,
-                                            dimensions=EMBEDDING_DIMENSIONS, encoding_format="float")
-        rows = sorted(response.data, key=lambda item: item.index)
-        if [item.index for item in rows] != list(range(len(batch))):
-            raise ValueError("Embedding provider returned invalid indices")
-        if any(len(item.embedding) != EMBEDDING_DIMENSIONS for item in rows):
-            raise ValueError("Embedding provider returned an unexpected dimension")
-        vectors.extend(item.embedding for item in rows)
-    return vectors
+    """Honor DashScope's ten-row limit and restore each response's input order.
+
+    Batches are independent requests, so they run concurrently (as mem0 fans out
+    independent searches with a small thread pool). Results are joined in input
+    order and the first failing batch, in input order, is raised.
+    """
+    batches = [texts[offset:offset + EMBEDDING_BATCH_SIZE]
+               for offset in range(0, len(texts), EMBEDDING_BATCH_SIZE)]
+    if len(batches) <= 1:
+        return [vector for batch in batches for vector in _embedding_batch(client, batch)]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(EMBEDDING_PARALLEL_BATCHES, len(batches))) as pool:
+        futures = [pool.submit(_embedding_batch, client, batch) for batch in batches]
+    return [vector for future in futures for vector in future.result()]

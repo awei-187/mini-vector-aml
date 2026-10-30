@@ -29,6 +29,13 @@ class AMLAPITests(unittest.TestCase):
         self.headers = {"Authorization": "Bearer local-test-token"}
 
     def llm(self, messages):
+        if "Generate retrieval questions" in messages[0]["content"]:
+            data = json.loads(messages[-1]["content"])
+            return json.dumps({"memories": [{"id": item["id"], "queries": ["Question about " + item["text"]]}
+                                           for item in data["memories"]]})
+        if "Rank candidate memories" in messages[0]["content"]:
+            data = json.loads(messages[-1]["content"])
+            return json.dumps({"ids": [item["id"] for item in data["candidates"]]})
         payload = json.loads(messages[-1]["content"].split("\n\n", 1)[1])
         self.prompts.append(payload)
         return json.dumps({"memory": [{"text": m["content"]} for m in payload["new_messages"]]})
@@ -39,7 +46,8 @@ class AMLAPITests(unittest.TestCase):
 
     def app(self, **kwargs):
         return create_app(db_path=self.path, api_token="local-test-token",
-                          llm=kwargs.get("llm", self.llm), embedder=kwargs.get("embedder", self.embed))
+                          llm=kwargs.get("llm", self.llm), embedder=kwargs.get("embedder", self.embed),
+                          rerank_mode="llm", rerank_limit=30, query_rewrite_enabled=False)
 
     def payload(self, request_id="r1", user_id="alice", session_id="s1", content="Alice lives in Berlin."):
         return {"request_id": request_id, "user_id": user_id, "session_id": session_id,
@@ -74,7 +82,7 @@ class AMLAPITests(unittest.TestCase):
             self.assertEqual(set(item), {"id", "content", "score", "created_at"})
             self.assertEqual(item["content"], "Alice lives in Berlin.")
             self.assertEqual(len(self.search(client).json()["data"]), 2)
-            self.assertEqual(len(self.prompts), 2)  # Search never invokes the LLM.
+            self.assertEqual(len(self.prompts), 2)  # Only Add performs fact extraction.
             memories = app.state.backend.memory.get_all(filters={"user_id": "alice"})["results"]
             self.assertEqual({m["metadata"]["session_id"] for m in memories}, {"s1", "s2"})
             self.assertEqual(memories[0]["metadata"]["source_timestamps"], [1704067200000])
@@ -109,7 +117,7 @@ class AMLAPITests(unittest.TestCase):
                 response = self.add(client)
             self.assertEqual(response.status_code, 500)
             self.assertNotIn("private-error", response.text)
-            for table in ("memories", "memory_fts", "history", "messages", "aml_context", "aml_requests"):
+            for table in ("memories", "memory_fts", "memory_queries", "history", "messages", "aml_context", "aml_requests"):
                 self.assertEqual(store.db.execute(f"SELECT count(*) FROM {table}").fetchone()[0], 0)
             self.assertIsNone(store.db.execute("SELECT dimension FROM aml_config").fetchone()[0])
             self.assertEqual(self.add(client).status_code, 200)
@@ -229,8 +237,8 @@ class AMLAPITests(unittest.TestCase):
     def test_live_client_routing_uses_separate_keys_and_closes_both(self):
         from mini_vector.aml_config import EmbeddingConfig
         chat, embedding = Mock(), Mock()
-        chat.chat.completions.create.return_value = SimpleNamespace(choices=[SimpleNamespace(
-            message=SimpleNamespace(content='{"memory":[{"text":"Alice lives in Berlin."}]}'))])
+        chat.chat.completions.create.side_effect = lambda **kwargs: SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=self.llm(kwargs["messages"])))])
         embedding.embeddings.create.side_effect = lambda **kwargs: SimpleNamespace(data=[
             SimpleNamespace(index=i, embedding=[1.0] * 1024) for i, _ in enumerate(kwargs["input"])])
         settings = {"OPENAI_BASE_URL": "https://chat.example/v1", "OPENAI_API_KEY": "synthetic-chat-key"}
@@ -238,7 +246,8 @@ class AMLAPITests(unittest.TestCase):
              patch("mini_vector.aml_api.embedding_config", return_value=EmbeddingConfig(
                  "https://qwen.example/compatible-mode/v1", "synthetic-qwen-key")), \
              patch("openai.OpenAI", side_effect=[chat, embedding]) as factory:
-            app = create_app(db_path=self.path, api_token="local-test-token")
+            app = create_app(db_path=self.path, api_token="local-test-token",
+                             rerank_mode="llm", rerank_limit=30, query_rewrite_enabled=False)
             with TestClient(app) as client:
                 self.assertEqual(self.add(client).status_code, 200)
                 self.assertEqual(self.search(client).status_code, 200)
@@ -266,6 +275,64 @@ class AMLAPITests(unittest.TestCase):
             self.assertEqual(self.add(client).status_code, 200)
             self.assertEqual(self.search(client).json(), {"data": []})
             self.assertEqual(app.state.backend.store.db.execute("SELECT count(*) FROM messages").fetchone()[0], 1)
+
+    def test_generated_queries_commit_once_and_search_reranks_each_channel(self):
+        operations = []
+        def complete(messages):
+            operations.append(messages[0]["content"])
+            return self.llm(messages)
+        app = self.app(llm=complete)
+        with TestClient(app) as client:
+            self.assertEqual(self.add(client).status_code, 200)
+            count = len(operations)
+            self.assertEqual(self.add(client).status_code, 200)
+            self.assertEqual(len(operations), count)
+            self.assertEqual(self.add(client, request_id="r2", content="Alice visits Berlin.").status_code, 200)
+            rows = app.state.backend.store.db.execute("SELECT memory_id,query FROM memory_queries").fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(self.search(client).status_code, 200)
+            self.assertEqual(sum("Rank candidate memories" in prompt for prompt in operations), 3)
+
+    def test_generation_failure_rolls_back_ingestion_and_retry_rebuilds_queries(self):
+        def complete(messages):
+            if "Generate retrieval questions" in messages[0]["content"]:
+                return '{"memories":[]}'
+            return self.llm(messages)
+        app = self.app(llm=complete)
+        with TestClient(app) as client:
+            self.assertEqual(self.add(client).status_code, 500)
+            store = app.state.backend.store
+            for table in ("memories", "memory_queries", "memory_fts", "history", "aml_context", "aml_requests"):
+                self.assertEqual(store.db.execute(f"SELECT count(*) FROM {table}").fetchone()[0], 0)
+            app.state.backend.memory.llm = self.llm
+            self.assertEqual(self.add(client).status_code, 200)
+            self.assertEqual(store.db.execute("SELECT count(*) FROM memory_queries").fetchone()[0], 1)
+
+    def test_rerank_failure_returns_original_evidence_without_exposing_provider_detail(self):
+        def complete(messages):
+            if "Rank candidate memories" in messages[0]["content"]:
+                raise ConnectionError("synthetic-provider-secret")
+            return self.llm(messages)
+        with TestClient(self.app(llm=complete)) as client:
+            self.assertEqual(self.add(client).status_code, 200)
+            self.assertEqual(self.add(client, request_id="r2", content="Alice likes Berlin.").status_code, 200)
+            with self.assertLogs("mini_vector.aml_api", level="INFO") as logs:
+                response = self.search(client)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual({item["content"] for item in response.json()["data"]},
+                             {"Alice lives in Berlin.", "Alice likes Berlin."})
+            self.assertNotIn("synthetic-provider-secret", response.text + str(logs.output))
+
+    def test_retrieval_configuration_change_cannot_reuse_aml_database(self):
+        with TestClient(self.app()) as client:
+            self.assertEqual(self.add(client).status_code, 200)
+        changed = create_app(db_path=self.path, api_token="local-test-token", llm=self.llm,
+                             embedder=self.embed, rerank_mode="none")
+        with self.assertRaisesRegex(RuntimeError, "AML startup failed"):
+            with TestClient(changed):
+                pass
+        with TestClient(self.app()) as client:
+            self.assertEqual(len(self.search(client).json()["data"]), 1)
 
     def test_database_identity_single_process_lease_and_legacy_protection(self):
         identity = {"model": "test"}

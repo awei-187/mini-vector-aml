@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mini_vector import MiniVector
+from legacy_helpers import legacy_memory as MiniVector
 from mini_vector.config import setting
 
 

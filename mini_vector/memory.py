@@ -7,10 +7,21 @@ import re
 import sqlite3
 import threading
 import uuid
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
 from .config import setting
+from .prompts import MEMORY_EXTRACTION_PROMPT, build_extraction_input
+from .prompts_time_v2 import MEMORY_EXTRACTION_PROMPT_TIME_V2
+from .query_rewrite import rewrite_query
+from .retrieval import memory_queries, rerank_channel, rerank_fused
+from .reranker import SUPPORT_INSTRUCTION, QwenReranker, qwen_reranker_config, rerank_qwen
+from .vector_scan import VectorPool, np
+
+
+QUERY_GROUP_SIZE = 6
 
 
 def _now() -> str:
@@ -56,7 +67,18 @@ def _trace_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
 class SQLiteVectorStore:
     """Persistent vector records in SQLite, searched by exact cosine scan + SQLite FTS5 BM25."""
 
-    def __init__(self, path: str = "mini_vector.sqlite3"):
+    def __init__(self, path: str = "mini_vector.sqlite3", *, vector_backend: str = "auto",
+                 vector_cache_bytes: int = 128*1024*1024):
+        if vector_backend not in {"auto", "python", "numpy"}:
+            raise ValueError("vector_backend must be auto, python or numpy")
+        if vector_backend == "numpy" and np is None:
+            raise RuntimeError("Install mini-vector-memory[fast] to use the numpy backend")
+        if type(vector_cache_bytes) is not int or vector_cache_bytes < 0:
+            raise ValueError("vector_cache_bytes must be a non-negative integer")
+        self.vector_backend = vector_backend
+        self.vector_cache_bytes = vector_cache_bytes
+        self._vector_cache = OrderedDict()
+        self._vector_cache_stamp = None
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.lock = threading.RLock()
@@ -67,6 +89,9 @@ class SQLiteVectorStore:
                 hash TEXT NOT NULL, metadata TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS memory_hash_idx ON memories(hash);
+            CREATE INDEX IF NOT EXISTS memory_user_scope_idx ON memories(json_extract(metadata, '$.user_id'));
+            CREATE INDEX IF NOT EXISTS memory_agent_scope_idx ON memories(json_extract(metadata, '$.agent_id'));
+            CREATE INDEX IF NOT EXISTS memory_run_scope_idx ON memories(json_extract(metadata, '$.run_id'));
             CREATE TABLE IF NOT EXISTS history (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL,
                 old_memory TEXT, new_memory TEXT, event TEXT NOT NULL,
@@ -79,6 +104,11 @@ class SQLiteVectorStore:
             );
             CREATE INDEX IF NOT EXISTS message_scope_idx ON messages(session_scope, seq);
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(id UNINDEXED, data);
+            CREATE TABLE IF NOT EXISTS memory_queries (
+                memory_id TEXT NOT NULL, position INTEGER NOT NULL,
+                query TEXT NOT NULL, embedding TEXT NOT NULL,
+                PRIMARY KEY (memory_id, position)
+            );
         """)
         self.db.commit()
 
@@ -92,13 +122,34 @@ class SQLiteVectorStore:
                   "metadata": {k: v for k, v in meta.items() if k not in reserved}}
         return result
 
-    def save(self, memory_id: str, text: str, vector: list[float], metadata: dict[str, Any]) -> None:
+    def save(self, memory_id: str, text: str, vector: list[float], metadata: dict[str, Any],
+             queries: list[tuple[str, list[float]]] = ()) -> None:
         with self.lock, self.db:
             self.db.execute("INSERT INTO memories VALUES (?, ?, ?, ?, ?)",
                             (memory_id, text, json.dumps(vector), hashlib.md5(text.encode()).hexdigest(),
                              json.dumps(metadata, ensure_ascii=False)))
             self.db.execute("INSERT INTO memory_fts(id, data) VALUES (?, ?)", (memory_id, text))
+            self._replace_queries(memory_id, queries)
             self._history(memory_id, None, text, "ADD", metadata["created_at"], metadata["updated_at"])
+
+    def _replace_queries(self, memory_id: str, queries) -> None:
+        self.db.execute("DELETE FROM memory_queries WHERE memory_id=?", (memory_id,))
+        self.db.executemany("INSERT INTO memory_queries VALUES (?, ?, ?, ?)",
+                            [(memory_id, index, query, json.dumps(vector))
+                             for index, (query, vector) in enumerate(queries)])
+
+    def replace_queries(self, memory_id: str, queries, *, expected_text: str) -> None:
+        with self.lock, self.db:
+            row = self.db.execute("SELECT data FROM memories WHERE id=?", (memory_id,)).fetchone()
+            if row is None or row[0] != expected_text:
+                raise ValueError("Memory changed while generating retrieval queries")
+            self._replace_queries(memory_id, queries)
+
+    def get_queries(self, memory_id: str) -> list[str]:
+        with self.lock:
+            rows = self.db.execute("SELECT query FROM memory_queries WHERE memory_id=? ORDER BY position",
+                                   (memory_id,)).fetchall()
+        return [row[0] for row in rows]
 
     def _history(self, mid: str, old: str | None, new: str | None, event: str, created: str, updated: str) -> None:
         self.db.execute("INSERT INTO history(id, old_memory, new_memory, event, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -106,13 +157,26 @@ class SQLiteVectorStore:
 
     def get(self, memory_id: str) -> dict[str, Any] | None:
         with self.lock:
-            row = self.db.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+            row = self.db.execute("SELECT id,data,hash,metadata FROM memories WHERE id=?", (memory_id,)).fetchone()
         return self._row(row) if row else None
+
+    def get_many(self, memory_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Read candidate payloads once, without fetching their large vectors."""
+        ids = list(dict.fromkeys(memory_ids))
+        found = {}
+        with self.lock:
+            for start in range(0, len(ids), 900):
+                batch = ids[start:start+900]
+                rows = self.db.execute(
+                    f"SELECT id,data,hash,metadata FROM memories WHERE id IN ({','.join('?' for _ in batch)})",
+                    batch).fetchall()
+                found.update((row["id"], self._row(row)) for row in rows)
+        return found
 
     def list(self, scope: dict[str, str]) -> list[dict[str, Any]]:
         clause, args = _scope_sql(scope)
         with self.lock:
-            rows = self.db.execute(f"SELECT * FROM memories WHERE {clause} ORDER BY rowid", args).fetchall()
+            rows = self.db.execute(f"SELECT id,data,hash,metadata FROM memories WHERE {clause} ORDER BY rowid", args).fetchall()
         return [self._row(row) for row in rows]
 
     def duplicate_hashes(self, scope: dict[str, str], hashes: Iterable[str]) -> set[str]:
@@ -126,12 +190,46 @@ class SQLiteVectorStore:
         return {row[0] for row in rows}
 
     def semantic(self, vector: list[float], scope: dict[str, str], limit: int) -> list[tuple[dict[str, Any], float]]:
-        clause, args = _scope_sql(scope)
         with self.lock:
-            rows = self.db.execute(f"SELECT * FROM memories WHERE {clause}", args).fetchall()
-        scored = [(row, _cosine(vector, json.loads(row["embedding"]))) for row in rows]
-        scored.sort(key=lambda pair: pair[1], reverse=True)
-        return [(self._row(row), score) for row, score in scored[:limit]]
+            ranked = self._vector_pool(scope, questions=False).rank(vector, limit)
+            payloads = self.get_many(mid for mid, _ in ranked)
+            return [(payloads[mid], score) for mid, score in ranked if mid in payloads]
+
+    def query_semantic(self, vector: list[float], scope: dict[str, str], limit: int
+                       ) -> list[tuple[dict[str, Any], float]]:
+        """Max question cosine per memory; deduplicate before applying the limit."""
+        with self.lock:
+            ranked = self._vector_pool(scope, questions=True).rank(vector, limit)
+            payloads = self.get_many(mid for mid, _ in ranked)
+            return [(payloads[mid], score) for mid, score in ranked if mid in payloads]
+
+    def _vector_pool(self, scope: dict[str, str], *, questions: bool) -> VectorPool:
+        # total_changes covers this connection, data_version covers other
+        # connections. Never retain a pool built inside a transaction: rollback
+        # does not increment total_changes and must not expose uncommitted data.
+        stamp = (self.db.total_changes, self.db.execute("PRAGMA data_version").fetchone()[0])
+        if stamp != self._vector_cache_stamp:
+            self._vector_cache.clear()
+            self._vector_cache_stamp = stamp
+        key = (tuple(sorted(scope.items())), questions)
+        cacheable = not self.db.in_transaction and self.vector_cache_bytes > 0
+        if cacheable and key in self._vector_cache:
+            self._vector_cache.move_to_end(key)
+            return self._vector_cache[key]
+        clause, args = _scope_sql(scope)
+        if questions:
+            sql = f"""SELECT q.memory_id,q.embedding FROM memory_queries q
+                JOIN memories m ON m.id=q.memory_id WHERE {clause} ORDER BY m.rowid,q.position"""
+        else:
+            sql = f"SELECT id,embedding FROM memories WHERE {clause} ORDER BY rowid"
+        pool = VectorPool(self.db.execute(sql, args), backend=self.vector_backend)
+        # Count compact numeric payloads. Python ID/group bookkeeping is extra.
+        if cacheable and pool.nbytes <= self.vector_cache_bytes:
+            while self._vector_cache and (len(self._vector_cache) >= 8 or
+                    sum(p.nbytes for p in self._vector_cache.values())+pool.nbytes > self.vector_cache_bytes):
+                self._vector_cache.popitem(last=False)
+            self._vector_cache[key] = pool
+        return pool
 
     def bm25(self, query: str, scope: dict[str, str], limit: int,
              research_trace: dict[str, Any] | None = None) -> dict[str, float]:
@@ -169,7 +267,8 @@ class SQLiteVectorStore:
             ])
         return normalized
 
-    def update(self, memory_id: str, text: str, vector: list[float] | None, metadata: dict[str, Any]) -> None:
+    def update(self, memory_id: str, text: str, vector: list[float] | None, metadata: dict[str, Any],
+               queries: list[tuple[str, list[float]]] = ()) -> None:
         with self.lock, self.db:
             row = self.db.execute("SELECT data FROM memories WHERE id=?", (memory_id,)).fetchone()
             if not row:
@@ -181,6 +280,7 @@ class SQLiteVectorStore:
                 self.db.execute("UPDATE memories SET data=?, embedding=?, hash=?, metadata=? WHERE id=?",
                                 (text, json.dumps(vector), hashlib.md5(text.encode()).hexdigest(),
                                  json.dumps(metadata, ensure_ascii=False), memory_id))
+                self._replace_queries(memory_id, queries)
             self.db.execute("DELETE FROM memory_fts WHERE id=?", (memory_id,))
             self.db.execute("INSERT INTO memory_fts(id, data) VALUES (?, ?)", (memory_id, text))
             self._history(memory_id, row[0], text, "UPDATE", metadata["created_at"], metadata["updated_at"])
@@ -194,6 +294,7 @@ class SQLiteVectorStore:
             self.db.execute("DELETE FROM memories WHERE id=?", (memory_id,))
             self.db.execute("DELETE FROM memory_fts WHERE id=?", (memory_id,))
             now = _now()
+            self.db.execute("DELETE FROM memory_queries WHERE memory_id=?", (memory_id,))
             self._history(memory_id, row[0], None, "DELETE", meta["created_at"], now)
 
     def delete_all(self, scope: dict[str, str]) -> int:
@@ -222,17 +323,57 @@ class SQLiteVectorStore:
         return [dict(r) for r in rows]
 
     def close(self) -> None:
+        self._vector_cache.clear()
         self.db.close()
 
 
 class MiniVector:
-    """ADD-only conversational extraction and scoped vector memory management."""
+    """ADD-only extraction, memory-side questions and scoped channel retrieval."""
 
     def __init__(self, db_path: str = "mini_vector.sqlite3", *, base_url: str | None = None,
                  chat_model: str | None = None, embedding_model: str | None = None,
                  llm: Callable[[list[dict[str, str]]], str] | None = None,
                  embedder: Callable[[list[str]], list[list[float]]] | None = None,
-                 store: SQLiteVectorStore | None = None):
+                 store: SQLiteVectorStore | None = None,
+                 extraction_prompt: str = "original",
+                 memory_query_enabled: bool = True, queries_per_memory: int = 3,
+                 rerank_mode: str = "qwen", rerank_limit: int = 60,
+                 reranker_model: str | None = "qwen3-rerank", reranker_instruction: str | None = SUPPORT_INSTRUCTION,
+                 reranker_endpoint: str | None = None, reranker_api_key: str | None = None,
+                 reranker_env_file: str | None = None, reranker_timeout: float = 120.0,
+                 reranker: Callable | None = None, search_path: str = "auto",
+                 query_rewrite_enabled: bool = True, query_rewrite_limit: int = 3):
+        if extraction_prompt not in {"original", "time_v2"}:
+            raise ValueError("extraction_prompt must be original or time_v2")
+        self.extraction_prompt = extraction_prompt
+        self.extraction_system_prompt = (MEMORY_EXTRACTION_PROMPT if extraction_prompt == "original"
+                                         else MEMORY_EXTRACTION_PROMPT_TIME_V2)
+        if type(memory_query_enabled) is not bool:
+            raise ValueError("memory_query_enabled must be boolean")
+        if type(queries_per_memory) is not int or queries_per_memory < 1:
+            raise ValueError("queries_per_memory must be a positive integer")
+        if rerank_mode not in {"none", "llm", "global", "evidence", "qwen"}:
+            raise ValueError("rerank_mode must be none, llm, global, evidence or qwen")
+        if type(rerank_limit) is not int or rerank_limit < 1:
+            raise ValueError("rerank_limit must be a positive integer")
+        if search_path not in {"auto", "channels"}:
+            raise ValueError("search_path must be auto or channels")
+        if type(query_rewrite_enabled) is not bool:
+            raise ValueError("query_rewrite_enabled must be boolean")
+        if type(query_rewrite_limit) is not int or not 1 <= query_rewrite_limit <= 3:
+            raise ValueError("query_rewrite_limit must be an integer between 1 and 3")
+        self.memory_query_enabled = memory_query_enabled
+        self.queries_per_memory = queries_per_memory
+        self.rerank_mode = rerank_mode
+        self.rerank_limit = rerank_limit
+        self.search_path = search_path
+        self.query_rewrite_enabled = query_rewrite_enabled
+        self.query_rewrite_limit = query_rewrite_limit
+        self.reranker = reranker
+        if rerank_mode == "qwen" and reranker is None:
+            self.reranker = QwenReranker(qwen_reranker_config(
+                model=reranker_model, instruction=reranker_instruction, endpoint=reranker_endpoint,
+                api_key=reranker_api_key, env_file=reranker_env_file, timeout=reranker_timeout))
         self.store = store or SQLiteVectorStore(db_path)
         self.llm, self.embedder = llm, embedder
         self.chat_model = chat_model or setting("OPENAI_CHAT_MODEL", "gpt-4o-mini")
@@ -262,6 +403,26 @@ class MiniVector:
             raise ValueError("Embedding provider returned an invalid batch")
         return [[float(x) for x in vector] for vector in vectors]
 
+    def _query_records(self, texts: list[str]) -> list[list[tuple[str, list[float]]]]:
+        if not self.memory_query_enabled or not texts:
+            return [[] for _ in texts]
+        # Questions are written per memory, so small groups can be generated in
+        # parallel; output length, not input, dominates this call's latency.
+        chunks = [texts[start:start + QUERY_GROUP_SIZE] for start in range(0, len(texts), QUERY_GROUP_SIZE)]
+        try:
+            if len(chunks) == 1:
+                groups = memory_queries(self._complete, texts, self.queries_per_memory)
+            else:
+                with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+                    pending = [pool.submit(memory_queries, self._complete, chunk, self.queries_per_memory)
+                               for chunk in chunks]
+                groups = [group for future in pending for group in future.result()]
+        except Exception as exc:
+            raise RuntimeError("Memory query generation failed") from exc
+        flat = [query for group in groups for query in group]
+        vectors = iter(self._embed(flat))
+        return [[(query, next(vectors)) for query in group] for group in groups]
+
     @staticmethod
     def _messages(value: str | dict[str, Any] | list[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(value, str):
@@ -287,27 +448,42 @@ class MiniVector:
         session = json.dumps(scope, sort_keys=True)
         output = []
         if not infer:
-            for msg in msgs:
-                if msg["role"] == "system":
-                    continue
+            raw = [msg for msg in msgs if msg["role"] != "system"]
+            queries = self._query_records([msg["content"] for msg in raw])
+            for msg, query_records in zip(raw, queries):
                 text = msg["content"]
                 mid = self._persist(text, self._embed([text])[0], {**(metadata or {}), **scope,
-                               "role": msg["role"], **({"actor_id": msg["name"]} if msg.get("name") else {})})
+                               "role": msg["role"], **({"actor_id": msg["name"]} if msg.get("name") else {})}, query_records)
                 output.append({"id": mid, "memory": text, "event": "ADD"})
             self.store.save_messages(msgs, session)
             return {"results": output}
 
+        return self.commit_add(self.prepare_add(msgs, scope=scope, metadata=metadata))
+
+    def prepare_add(self, messages, *, user_id: str | None = None, agent_id: str | None = None,
+                    run_id: str | None = None, scope: dict[str, str] | None = None,
+                    metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run every read and provider call of an inferring Add; write nothing.
+
+        Model calls happen here, outside any storage transaction, so independent
+        Adds can overlap. commit_add then writes the result in one short step.
+        Callers that run Adds concurrently must serialize them per scope, since
+        extraction reads that scope's recent context and existing memories.
+        """
+        scope = scope or _scope({"user_id": user_id, "agent_id": agent_id, "run_id": run_id})
+        msgs = self._messages(messages)
+        session = json.dumps(scope, sort_keys=True)
+        plan = {"scope": scope, "messages": msgs, "session": session, "metadata": metadata, "records": []}
         current = "\n".join(f'{m["role"]}: {m["content"]}' for m in msgs if m["role"] != "system")
         if not current.strip():
-            self.store.save_messages(msgs, session)
-            return {"results": []}
+            return plan
         recent = self.store.last_messages(session)
         current_vector = self._embed([current])[0]
         similar = self.store.semantic(current_vector, scope, 10)
         existing = [{"id": item["id"], "text": item["memory"]} for item, _ in similar]
-        prompt = """Extract durable, useful facts stated in New Messages only. Include user facts, preferences, plans, and genuinely new assistant actions or recommendations; ignore greetings and assistant paraphrases. Resolve references using recent context, retain precise entities/numbers/dates, and never infer unsupported facts. Return JSON exactly as {\"memory\":[{\"text\":\"self-contained fact\"}]}. Add only: do not update or delete existing facts. Skip a fact only when the same fact is already present.\n\n""" + json.dumps({"recent_messages": recent, "new_messages": msgs, "existing_memories": existing}, ensure_ascii=False)
+        prompt = build_extraction_input(msgs, recent, existing, metadata)
         try:
-            response = self._complete([{"role": "system", "content": "You extract accurate, concise agent memories from conversation."},
+            response = self._complete([{"role": "system", "content": self.extraction_system_prompt},
                                        {"role": "user", "content": prompt}])
         except Exception as exc:
             raise RuntimeError(f"Memory extraction request failed: {exc}") from exc
@@ -319,31 +495,57 @@ class MiniVector:
             facts = [f["text"].strip() for f in facts if isinstance(f, dict) and isinstance(f.get("text"), str) and f["text"].strip()]
         except Exception as exc:
             raise ValueError(f"Could not parse memory extraction JSON: {exc}") from exc
-        # Save context even when extraction returns no facts, matching mem0's workflow.
         if facts:
-            vectors = self._embed(facts)
             hashes = [hashlib.md5(f.encode()).hexdigest() for f in facts]
             duplicates = self.store.duplicate_hashes(scope, hashes)
             seen: set[str] = set()
-            for fact, vector, digest in zip(facts, vectors, hashes):
+            unique = []
+            for fact, digest in zip(facts, hashes):
                 if digest in duplicates or digest in seen:
                     continue
                 seen.add(digest)
-                mid = self._persist(fact, vector, {**(metadata or {}), **scope})
-                output.append({"id": mid, "memory": fact, "event": "ADD"})
-        self.store.save_messages(msgs, session)
+                unique.append(fact)
+            if unique:
+                # Question generation and fact embedding are independent; run
+                # them together. Errors surface in the original sequential order.
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    pending_queries = pool.submit(self._query_records, unique)
+                    pending_vectors = pool.submit(self._embed, unique)
+                queries, vectors = pending_queries.result(), pending_vectors.result()
+                plan["records"] = list(zip(unique, vectors, queries))
+        return plan
+
+    def commit_add(self, plan: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        """Persist a prepared Add without provider calls."""
+        output = []
+        for fact, vector, query_records in plan["records"]:
+            mid = self._persist(fact, vector, {**(plan["metadata"] or {}), **plan["scope"]}, query_records)
+            output.append({"id": mid, "memory": fact, "event": "ADD"})
+        # Save context even when extraction returns no facts, matching mem0's workflow.
+        self.store.save_messages(plan["messages"], plan["session"])
         return {"results": output}
 
-    def _persist(self, text: str, vector: list[float], metadata: dict[str, Any]) -> str:
+    def _persist(self, text: str, vector: list[float], metadata: dict[str, Any],
+                 queries: list[tuple[str, list[float]]] = ()) -> str:
         now = _now()
         mid = str(uuid.uuid4())
         payload = {**metadata, "created_at": metadata.get("created_at", now), "updated_at": now}
-        self.store.save(mid, text, vector, payload)
+        self.store.save(mid, text, vector, payload, queries)
         return mid
 
     def search(self, query: str, *, top_k: int = 20, filters: dict[str, Any] | None = None,
                threshold: float = 0.1, explain: bool = False,
                research_trace: dict[str, Any] | None = None) -> dict[str, list[dict[str, Any]]]:
+        if (self.search_path == "auto" and not self.memory_query_enabled
+                and self.rerank_mode == "none"):
+            return self._search_legacy(query, top_k=top_k, filters=filters, threshold=threshold,
+                                       explain=explain, research_trace=research_trace)
+        return self._search_channels(query, top_k=top_k, filters=filters, threshold=threshold,
+                                     explain=explain, research_trace=research_trace)
+
+    def _search_legacy(self, query: str, *, top_k: int = 20, filters: dict[str, Any] | None = None,
+                       threshold: float = 0.1, explain: bool = False,
+                       research_trace: dict[str, Any] | None = None) -> dict[str, list[dict[str, Any]]]:
         scope = _scope(filters)
         if not isinstance(query, str) or not query.strip() or top_k < 1 or not 0 <= threshold <= 1:
             raise ValueError("query must be non-empty, top_k positive, and threshold between 0 and 1")
@@ -404,6 +606,183 @@ class MiniVector:
             })
         return {"results": results}
 
+    def prepare_answer(self, query: str, *, source_index, filters=None, top_k: int = 20,
+                       threshold: float = 0.1, research_trace=None):
+        """Retrieve facts and original windows; build an answer request without time rules.
+
+        source_index must contain only the caller-authorized source corpus for
+        the same scope as filters. This helper does not call an answer model.
+        """
+        from .answer_context import answer_messages, build_context
+
+        facts = self.search(query, filters=filters, top_k=top_k, threshold=threshold,
+                            research_trace=research_trace)["results"]
+        windows, source_trace = source_index.select(
+            query, facts, max_windows=4, radius=1, max_chars=12000)
+        context = build_context(facts, windows)
+        return {"retrieval": facts, "source_windows": windows, "source_trace": source_trace,
+                "answer_context": context, "messages": answer_messages(query, context),
+                "answer_policy": "source_windows_no_temporal_rules"}
+
+    def _search_channels(self, query: str, *, top_k: int, filters, threshold: float,
+                         explain: bool, research_trace) -> dict[str, list[dict[str, Any]]]:
+        scope = _scope(filters)
+        if not isinstance(query, str) or not query.strip() or top_k < 1 or not 0 <= threshold <= 1:
+            raise ValueError("query must be non-empty, top_k positive, and threshold between 0 and 1")
+        rewrite_trace = None
+        subqueries: list[str] = []
+        if self.query_rewrite_enabled:
+            subqueries, rewrite_info = rewrite_query(self._complete, query, self.query_rewrite_limit)
+            rewrite_trace = {"enabled": True, **rewrite_info}
+        # With the rewrite active the original question and its subqueries share
+        # one embedding batch; the question vector must come back first.
+        if subqueries:
+            vectors = self._embed([query.strip()] + subqueries)
+            vector, subvectors = vectors[0], vectors[1:]
+        else:
+            vector, subvectors = self._embed([query.strip()])[0], []
+        candidate_limit = max(top_k * 4, 60)
+        semantic = self.store.semantic(vector, scope, candidate_limit)
+        generated = (self.store.query_semantic(vector, scope, candidate_limit)
+                     if self.memory_query_enabled else [])
+        bm25_trace = {} if research_trace is not None else None
+        lexical_scores = self.store.bm25(query, scope, candidate_limit, research_trace=bm25_trace)
+        lexical_payloads = self.store.get_many(lexical_scores)
+        lexical = [(lexical_payloads[mid], score) for mid, score in lexical_scores.items()
+                   if mid in lexical_payloads]
+        # Each route is (name, candidates, lexical, query): lexical routes skip the
+        # cosine threshold, and every route carries the query that selected it.
+        channels = [("semantic", semantic, False, query), ("bm25", lexical, True, query),
+                    ("memory_query", generated, False, query)]
+        rewrite_lexical_traces: list[tuple[str, dict[str, Any]]] = []
+        for index, subquery in enumerate(subqueries, start=1):
+            channels.append((f"rewrite_{index}",
+                             self.store.semantic(subvectors[index - 1], scope, candidate_limit),
+                             False, subquery))
+            sub_trace = {} if research_trace is not None else None
+            sub_scores = self.store.bm25(subquery, scope, candidate_limit, research_trace=sub_trace)
+            sub_payloads = self.store.get_many(sub_scores)
+            channels.append((f"rewrite_{index}_bm25",
+                             [(sub_payloads[mid], score) for mid, score in sub_scores.items()
+                              if mid in sub_payloads], True, subquery))
+            if sub_trace:
+                rewrite_lexical_traces.append((f"rewrite_{index}_bm25", sub_trace))
+        merged, channel_trace = {}, {}
+        active = 0
+        for name, candidates, lexical_channel, channel_query in channels:
+            eligible = [(item, score) for item, score in candidates
+                        if lexical_channel or score >= threshold]
+            ranked, rerank_trace = rerank_channel(
+                self._complete, channel_query, [item for item, _ in eligible],
+                self.rerank_limit, self.rerank_mode == "llm")
+            active += bool(ranked)
+            for rank, item in enumerate(ranked, start=1):
+                entry = merged.setdefault(item["id"], {"item": item, "rrf": 0.0, "ranks": {}})
+                entry["rrf"] += 1 / (60 + rank)
+                entry["ranks"][name] = rank
+            if research_trace is not None:
+                channel_trace[name] = {
+                    "status": "recorded", "candidates": [
+                        {"rank": rank, "memory_id": item["id"], "score": float(score),
+                         "text": item["memory"], "metadata": _trace_metadata(item.get("metadata"))}
+                        for rank, (item, score) in enumerate(candidates, start=1)],
+                    "eligible_ids": [item["id"] for item, _ in eligible],
+                    "rerank": rerank_trace,
+                }
+        # Equal-weight RRF of channel ranks, normalized to [0, 1]. The LLM only
+        # changes the head of each channel; distinct candidates survive fusion.
+        ordered = sorted(merged.values(), key=lambda entry: (-entry["rrf"], entry["item"]["id"]))
+        combined_order = [entry["item"]["id"] for entry in ordered]
+        global_trace = None
+        if self.rerank_mode in {"global", "evidence"}:
+            selected, global_trace = rerank_fused(
+                self._complete, query, [entry["item"] for entry in ordered],
+                self.rerank_limit, top_k, diverse=self.rerank_mode == "evidence")
+            by_id = {entry["item"]["id"]: entry for entry in ordered}
+            ordered = [by_id[item["id"]] for item in selected]
+        qwen_trace = None
+        if self.rerank_mode == "qwen":
+            selected, qwen_trace = rerank_qwen(
+                self.reranker, query, [entry["item"] for entry in ordered], self.rerank_limit)
+            by_id = {entry["item"]["id"]: entry for entry in ordered}
+            ordered = [by_id[item["id"]] for item in selected]
+        qwen_scores = ({row["memory_id"]: row["score"] for row in qwen_trace["scores"]}
+                       if qwen_trace is not None else {})
+        semantic_scores = {item["id"]: score for item, score in semantic}
+        query_scores = {item["id"]: score for item, score in generated}
+        results = []
+        for entry in ordered[:top_k]:
+            item = entry["item"]
+            score = entry["rrf"] / (active / 61)
+            result = {**item, "score": min(1.0, score)}
+            if item["id"] in qwen_scores:
+                result["reranker_score"] = qwen_scores[item["id"]]
+            if explain or research_trace is not None:
+                result["score_details"] = {
+                    "semantic_score": semantic_scores.get(item["id"], 0.0),
+                    "bm25_score": lexical_scores.get(item["id"], 0.0),
+                    "memory_query_score": query_scores.get(item["id"], 0.0),
+                    "channel_ranks": entry["ranks"], "rrf_score": entry["rrf"],
+                    "final_score": result["score"],
+                }
+            results.append(result)
+        if research_trace is not None:
+            if bm25_trace:
+                channel_trace["bm25"].update(status=bm25_trace["status"],
+                                             lexical_details=bm25_trace)
+            for name, sub_trace in rewrite_lexical_traces:
+                channel_trace[name].update(status=sub_trace["status"], lexical_details=sub_trace)
+            research_trace.clear()
+            research_trace.update({
+                "schema_version": 5 if rewrite_trace is not None else (4 if qwen_trace is not None else (3 if global_trace is not None else 2)),
+                "engine": "mini-vector", "candidate_limit": candidate_limit,
+                "top_k": top_k, "threshold": threshold,
+                "memory_query_enabled": self.memory_query_enabled,
+                "rerank_mode": self.rerank_mode, "rerank_limit": self.rerank_limit,
+                "search_path": self.search_path,
+                "score_semantics": {"final": "equal-weight channel RRF (k=60), normalized by active_channels/61"},
+                "channels": channel_trace,
+                "stages": {"combined_order": combined_order,
+                           "final": [{"rank": rank, "memory_id": item["id"], "score": item["score"],
+                                      "score_details": item["score_details"],
+                                      "metadata": _trace_metadata(item.get("metadata"))}
+                                     for rank, item in enumerate(results, start=1)]},
+                "source_attribution": "memory metadata as recorded; absent source IDs remain unknown",
+            })
+            if rewrite_trace is not None:
+                research_trace["query_rewrite"] = rewrite_trace
+            if global_trace is not None:
+                research_trace["global_rerank"] = global_trace
+                research_trace["stages"]["selected_order"] = [entry["item"]["id"] for entry in ordered]
+                research_trace["score_semantics"]["final"] += "; RRF score retained after global selection (not a rank probability)"
+            if qwen_trace is not None:
+                research_trace["qwen_rerank"] = qwen_trace
+                research_trace["stages"]["selected_order"] = [entry["item"]["id"] for entry in ordered]
+                research_trace["score_semantics"]["final"] += "; RRF score retained after Qwen ordering (not monotonic in output rank)"
+                research_trace["score_semantics"]["reranker_score"] = "separate provider relevance score for scored prefix only; not a calibrated probability"
+            if not explain:
+                for item in results:
+                    item.pop("score_details", None)
+        return {"results": results}
+
+    def backfill_memory_queries(self, *, filters: dict[str, Any] | None = None) -> dict[str, int]:
+        """Explicitly index existing memories; skip already indexed rows on restart.
+
+        Processes one memory at a time. Completed rows remain committed if a later
+        provider call fails. Never invoked implicitly by opening or searching a DB.
+        """
+        scope = _scope(filters)
+        if not self.memory_query_enabled:
+            raise ValueError("Enable memory queries before backfilling")
+        indexed = 0
+        for item in self.store.list(scope):
+            if self.store.get_queries(item["id"]):
+                continue
+            records = self._query_records([item["memory"]])[0]
+            self.store.replace_queries(item["id"], records, expected_text=item["memory"])
+            indexed += 1
+        return {"indexed": indexed}
+
     def get(self, memory_id: str) -> dict[str, Any] | None:
         return self.store.get(memory_id)
 
@@ -417,13 +796,14 @@ class MiniVector:
         if text is None and metadata is None:
             raise ValueError("Provide text or metadata to update")
         new_text = text if text is not None else old["memory"]
+        queries = self._query_records([new_text])[0] if text is not None else []
         vector = self._embed([new_text])[0] if text is not None else None
         immutable = {"user_id", "agent_id", "run_id", "role", "actor_id", "attributed_to",
                      "id", "memory", "hash", "data", "created_at", "updated_at", "metadata"}
         new_meta = {**old.get("metadata", {}), **{k: old[k] for k in immutable & old.keys()}}
         new_meta.update({k: v for k, v in (metadata or {}).items() if k not in immutable})
         new_meta.update(created_at=old["created_at"], updated_at=_now())
-        self.store.update(memory_id, new_text, vector, new_meta)
+        self.store.update(memory_id, new_text, vector, new_meta, queries)
         return {"message": "Memory updated successfully"}
 
     def delete(self, memory_id: str) -> dict[str, str]:

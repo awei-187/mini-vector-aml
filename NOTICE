@@ -1,20 +1,39 @@
-Mini Vector AML baseline
+Mini Vector AML
 
 This compact implementation follows the non-graph open-source memory workflow
-of mem0 (https://github.com/mem0ai/mem0). The upstream project is licensed under
-Apache License 2.0. Its license is preserved in third_party/mem0/LICENSE and
-includes the original notice: Copyright [2023] [Taranjeet Singh].
+of mem0 (https://github.com/mem0ai/mem0), described in: Prateek Chhikara, Dev
+Khant, Saket Aryan, Taranjeet Singh, Deshraj Yadav, "Mem0: Building
+Production-Ready AI Agents with Scalable Long-Term Memory", arXiv:2504.19413,
+2025. The upstream project is licensed under Apache License 2.0. Its license is
+preserved in third_party/mem0/LICENSE and includes the original notice:
+Copyright [2023] [Taranjeet Singh].
 
 Attribution reference: mem0 commit 47a69e1e72dc562b6fdd49a9ef892229afc7508a.
 That reference identifies the locally inspected upstream snapshot; it does not
 claim that this repository is an unmodified checkout of that commit.
 
-Changes from the upstream workflow include a compact synchronous Python API,
-SQLite persistence, exact vector scanning, FTS5 BM25 reranking, ADD-only fact
-extraction, and an AML-specific authenticated Add/Search adapter with atomic
-batch ingestion, durable idempotency, exact user isolation, and Qwen embeddings.
-This repository does not distribute mem0's full source tree or benchmark data.
+Changes from the upstream workflow (baseline-v1):
+- compact synchronous Python API with SQLite persistence and exact vector scans;
+- FTS5 BM25 retrieval; ADD-only fact extraction (no UPDATE/DELETE decisions);
+- AML-specific authenticated Add/Search adapter with atomic batch ingestion,
+  durable idempotency, exact user isolation and Qwen text-embedding-v4.
 
-Publication packaging adds documentation, examples, provenance and attribution.
-Runtime source and the bundled tests are copied unchanged from the baseline
-deployment archive identified in BASELINE_MANIFEST.json.
+Additional changes in enhanced-v2 (own work unless noted):
+- memory-side retrieval questions generated per fact and indexed as vectors;
+- query decomposition into up to three subqueries, each searched separately;
+- equal-weight reciprocal rank fusion (k=60) over all retrieval routes;
+- qwen3-rerank (Alibaba Cloud DashScope text rerank API) over the fused head,
+  with a fixed instruction, falling back to the fused order on failure;
+- concurrency: per-user serialization instead of a global lock, provider calls
+  outside the storage transaction, incrementally maintained per-user vector
+  pools, parallel question-generation groups and embedding batches, and bounded
+  provider retries. Thread-pool fan-out of independent calls follows the pattern
+  used in mem0's search path.
+
+The ordered-query validation pattern comes from the author's own query-rewrite
+research. The short-ID listwise contract in retrieval.py (used only by the
+optional LLM rerank modes, not by the default qwen mode) is adapted from the
+author's mini-hindsight, a compact reimplementation of Hindsight by Vectorize AI
+(https://github.com/vectorize-io/hindsight, MIT License); no Hindsight source is
+included. This repository does not distribute mem0's full source tree,
+benchmark data, experiment outputs or credentials.
