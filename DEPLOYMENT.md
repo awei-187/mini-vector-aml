@@ -48,6 +48,14 @@ ReadWritePaths=/var/lib/mini-vector
 WantedBy=multi-user.target
 ```
 
+Final submitted configuration (enhanced-v2 + time_v2 extraction, `list` Qwen
+instruction, observation-date prefix in Search content). It needs a new database
+path, because the stored identity differs from enhanced-v2.sqlite3:
+
+```ini
+ExecStart=/opt/mini-vector/venv/bin/python -m mini_vector.aml_api --host 127.0.0.1 --port 8000 --db-path /var/lib/mini-vector/final-v2list.sqlite3 --extraction-prompt time_v2 --search-time-format date_prefix --reranker-instruction-preset list
+```
+
 Example Nginx HTTP configuration; replace aml.example.com with your domain:
 
 ```nginx

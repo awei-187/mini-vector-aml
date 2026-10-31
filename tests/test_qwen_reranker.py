@@ -103,6 +103,28 @@ class QwenRerankerTests(unittest.TestCase):
             memory.add("two", user_id="a", infer=False)
             memory.search("one", filters={"user_id": "a"})
 
+    def test_list_preset_is_frozen_experiment_text(self):
+        import hashlib
+        from mini_vector.reranker import INSTRUCTION_PRESETS, LIST_INSTRUCTION
+        self.assertEqual(hashlib.sha256(LIST_INSTRUCTION.encode()).hexdigest(),
+                         "68141ce599ef302478a8486a836c1cf302346c497e0bccd13deddfea7d0adfe6")
+        self.assertEqual(INSTRUCTION_PRESETS, {"support": SUPPORT_INSTRUCTION, "list": LIST_INSTRUCTION,
+                                               "default": DEFAULT_INSTRUCTION})
+
+    def test_cli_instruction_preset_and_explicit_text(self):
+        from mini_vector import aml_api
+        from mini_vector.reranker import LIST_INSTRUCTION
+        for argv, expected in ((["--reranker-instruction-preset", "list"], LIST_INSTRUCTION),
+                               ([], SUPPORT_INSTRUCTION),
+                               (["--reranker-instruction", "custom text"], "custom text")):
+            with patch("sys.argv", ["aml_api", *argv]), patch.object(aml_api, "create_app") as create, \
+                    patch("uvicorn.run"):
+                aml_api.main()
+            self.assertEqual(create.call_args.kwargs["reranker_instruction"], expected)
+        with patch("sys.argv", ["aml_api", "--reranker-instruction", "x", "--reranker-instruction-preset", "list"]), \
+                patch("sys.stderr"), self.assertRaises(SystemExit):
+            aml_api.main()
+
     def test_constructor_keeps_chat_and_reranker_models_independent(self):
         memory = MiniVector(":memory:", llm=lambda _: "{}", embedder=lambda t: [[1., 0.] for _ in t],
             chat_model="chat-model", rerank_mode="qwen", reranker_model="qwen3-rerank",

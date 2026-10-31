@@ -27,7 +27,7 @@ from .aml_store import AMLStore
 from .config import setting
 from .memory import MiniVector
 from .aml_time import date_prefix
-from .reranker import SUPPORT_INSTRUCTION, QwenReranker, qwen_reranker_config
+from .reranker import INSTRUCTION_PRESETS, SUPPORT_INSTRUCTION, QwenReranker, qwen_reranker_config
 
 CHAT_MODEL = "gpt-4o-mini"
 WORKER_THREADS = 64
@@ -363,10 +363,14 @@ def main():
     parser.add_argument("--disable-query-rewrite", action="store_true")
     parser.add_argument("--query-rewrite-limit", type=int, default=3)
     parser.add_argument("--reranker-model", default="qwen3-rerank")
-    parser.add_argument("--reranker-instruction", default=SUPPORT_INSTRUCTION)
+    instruction = parser.add_mutually_exclusive_group()
+    instruction.add_argument("--reranker-instruction")
+    instruction.add_argument("--reranker-instruction-preset", choices=tuple(INSTRUCTION_PRESETS), default="support")
     parser.add_argument("--reranker-env-file")
     parser.add_argument("--reranker-timeout", type=float, default=120.0)
     args = parser.parse_args()
+    if args.reranker_instruction is None:
+        args.reranker_instruction = INSTRUCTION_PRESETS[args.reranker_instruction_preset]
     import uvicorn
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     for name in ("openai", "httpx", "httpcore"):

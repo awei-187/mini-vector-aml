@@ -30,6 +30,14 @@ SUPPORT_INSTRUCTION = (
     "Respect dates, negation, uncertainty, reported statements, and the distinction between plans and completed events. "
     "Give low relevance to memories that merely share names or topic words without useful evidence for the requested information. Do not invent missing facts."
 )
+# Frozen 2026-10-30 instruct comparison winner (RESULTS_QWEN_INSTRUCT_V2_20261030).
+LIST_INSTRUCTION = (
+    "Given a question about people and their past conversations, rank memories by how much factual evidence they provide to answer the question. "
+    "Many questions need several memories: for questions asking for lists, counts, all activities or items, comparisons, or reasons that combine facts, "
+    "give high relevance to every memory that contributes a distinct item, instance, or necessary link, even if it covers only part of the answer. "
+    "Give low relevance to memories that only share names or topic words."
+)
+INSTRUCTION_PRESETS = {"support": SUPPORT_INSTRUCTION, "list": LIST_INSTRUCTION, "default": DEFAULT_INSTRUCTION}
 
 
 @dataclass(frozen=True)
