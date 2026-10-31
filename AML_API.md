@@ -1,5 +1,9 @@
 # AML Textual API: enhanced-v2
 
+The final submitted configuration runs this API with `--extraction-prompt time_v2
+--search-time-format date_prefix --reranker-instruction-preset list`; see
+[README](README.md#final-submitted-configuration). The wire contract is unchanged.
+
 ## Contract
 
 `GET /health` returns `{"status":"ok"}` after initialization, without auth or
@@ -35,12 +39,16 @@ ignores options and never generates an answer. User scope is exact (including
 surrounding whitespace); sessions are provenance only, so search can retrieve
 across sessions for the same user. The response is `{"data":[...]}` with at most
 top_k records, each containing `id`, `content`, `score` and `created_at`, in
-final rank order. Empty success is `{"data":[]}`.
+final rank order. Empty success is `{"data":[]}`. `content` is the memory text;
+with `date_prefix` it starts with the observation date of the memory's source
+messages, taken from their Add `timestamp` values, e.g.
+`[Stated on Monday, 8 May 2023] User adopted a cat named Miso ...`. Memories whose
+messages had no timestamp are returned without a prefix.
 
 Routes: fact-vector cosine (threshold 0.1), FTS5 BM25 and memory-side question
 vectors for the original query; fact-vector cosine and BM25 for each subquery.
 Fusion is equal-weight RRF (k=60); qwen3-rerank orders the first 60 fused
-memories. `score` is the normalized RRF score and need not decrease with rank
+memories using the configured instruction preset. `score` is the normalized RRF score and need not decrease with rank
 after reranking. Scores are retrieval scores, not confidence estimates.
 
 ## Errors and execution
@@ -80,7 +88,15 @@ validation. Missing or unsupported settings fail rather than fall back to chat.
 Reranking reads `QWEN_RERANK_ENDPOINT` (an HTTPS DashScope text-rerank URL) and
 the key named by `QWEN_RERANK_API_KEY_ENV` from the file in
 `MINI_VECTOR_RERANKER_ENV_FILE` (or `--reranker-env-file`); the model is fixed
-to qwen3-rerank with the built-in support instruction.
+to qwen3-rerank. The instruction is a built-in preset chosen with
+`--reranker-instruction-preset {support,list,default}` (default `support`; the
+final submitted configuration uses `list`).
+
+`--extraction-prompt {original,time_v2}` selects the extraction prompt (default
+`original`; final configuration `time_v2`). `--search-time-format
+{as_is,date_prefix}` selects the Search content format (default `as_is`; final
+configuration `date_prefix`). All three choices are part of the persisted
+database identity.
 
 `AML_API_TOKEN` is required; process env wins over .env. Keep it stable across
 restarts. DB path precedence is --db-path, AML_DB_PATH env, .env, then

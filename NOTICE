@@ -30,6 +30,19 @@ Additional changes in enhanced-v2 (own work unless noted):
   provider retries. Thread-pool fan-out of independent calls follows the pattern
   used in mem0's search path.
 
+Additional changes in the final submitted configuration (own work), enabled by
+command-line switches on the enhanced-v2 code (see README):
+- time_v2 extraction prompt: only the time-related text of the mem0-derived
+  extraction prompt is revised (precision-preserving resolution of relative
+  times against the observation date, observation anchors for unresolved
+  wording, observation date not used as event date; three examples corrected);
+- `list` qwen3-rerank instruction, favoring every memory that contributes a
+  distinct item or necessary link for list, count, comparison and multi-part
+  questions; selected among six frozen candidate instructions;
+- observation-date prefix on Search content, derived from Add message timestamps.
+These choices were compared offline on one public LoCoMo conversation (conv-26);
+no benchmark data, questions, answers or names are included in the repository.
+
 The ordered-query validation pattern comes from the author's own query-rewrite
 research. The short-ID listwise contract in retrieval.py (used only by the
 optional LLM rerank modes, not by the default qwen mode) is adapted from the
